@@ -1,210 +1,157 @@
 # strata
 
-A browser-native viewer for volumetric medical imaging. Point it at a directory
-of DICOM files and it indexes them into patient/study/series, then serves any
-series to a WebGL2 viewer with interactive Hounsfield windowing.
+**Open any DICOM study in your browser. One binary, one folder, no setup.**
 
-No desktop install, no PACS, no upload step. The server reads the files where
-they already are.
+Point strata at a directory of CT or MRI files and it gives you a radiology
+workstation at `localhost` — scroll the slices, window the Hounsfield range,
+or render the whole study in 3D on the GPU. No database to populate, no
+DICOMweb server to stand up, no import step. It reads the files where they
+already are.
 
-![Chest CT under a lung window](docs/images/lung-slice38.png)
+![strata rendering a chest CT in 3D](docs/images/hero.png)
 
-*TCGA-LUAD chest CT, slice 38/60, lung window (C −600 / W 1500). Rendered in
-the browser from a 512×512 int16 Hounsfield texture.*
+*A 60-slice chest CT from the public TCGA-LUAD collection, rendered at full
+resolution in the browser. Bone transfer function, 180 HU threshold.*
 
-## Status
+---
 
-**Milestones 1–2 are complete: indexing and 2D slice viewing.**
-
-Working today:
-
-- Recursive DICOM indexing, parsing headers only
-- Series grouping with geometrically correct slice ordering
-- SQLite index, HTTP API
-- WebGL2 slice viewer with shader-side windowing
-- Scroll through slices, drag to adjust window centre and width, five radiology presets
-
-Not built yet, and deliberately not implied elsewhere in this README: 3D volume
-raymarching, maximum intensity projection, multiplanar reslicing, Hounsfield
-volume measurement, and the multi-resolution pyramid with progressive
-streaming. Those are milestones 3–6.
-
-## Why the slice ordering matters
-
-Each DICOM file carries its own position and orientation in patient
-coordinates. The obvious way to stack slices into a volume is to sort by
-`InstanceNumber` — and it is wrong, because that tag is unreliable in
-real-world data.
-
-The failure mode is the dangerous kind. A volume built from wrongly ordered
-slices still renders successfully. Nothing crashes, no error appears; the
-image is simply of anatomy that does not exist in that arrangement.
-
-So ordering is derived from geometry: the slice normal is the cross product of
-the row and column direction cosines from `ImageOrientationPatient`, and each
-slice's sort key is its `ImagePositionPatient` projected onto that normal.
-`InstanceNumber` is never consulted.
-
-The same principle drives the rest of the design:
-
-- **Non-finite values are rejected at the parse boundary.** `ImagePositionPatient`
-  is a decimal-string field, and `"nan"` parses to a valid `f64` without error.
-  A NaN sort key misplaces exactly one slice while every other slice sorts
-  correctly, so non-finite orientations and positions are rejected on read.
-- **Hounsfield calibration is never fabricated.** CT values become physically
-  meaningful via `hu = raw × RescaleSlope + RescaleIntercept`. When those tags
-  are absent the data is not in Hounsfield Units, and `hu_calibrated` is false
-  all the way through the API to the UI. Notably `dicom-pixeldata`'s own
-  rescale accessor silently substitutes an identity slope and intercept when
-  the tags are missing; this project reads tag presence directly instead, so an
-  uncalibrated series is reported as uncalibrated rather than quietly presented
-  as HU.
-- **A corrupt file does not fail a scan.** Per-file errors become warnings
-  naming the file. One bad file in a 10,000-file archive must not cost the
-  other 9,999.
-
-## Measured performance
-
-Every number below is output from `scripts/bench.ps1`. Nothing here is
-estimated.
-
-**Hardware:** AMD Ryzen 9 9950X3D (16C/32T), 93.6 GB RAM, Windows 11 Pro.
-**Dataset:** TCGA-LUAD chest CT, 60 slices, 512×512, Implicit VR Little Endian,
-Hounsfield calibrated.
-
-| | |
-| --- | --- |
-| Index 60 slices | **4.8 ms** median of 10 runs |
-| Per slice indexed | **0.081 ms** |
-| Index rate | **~12,400 slices/sec** |
-| Slice fetch, mean | **7.86 ms** |
-| Slice fetch, p50 | **6.32 ms** |
-| Slice fetch, p99 | **24.35 ms** |
-| Slice payload | 524,288 bytes (512 × 512 × int16) |
-| Sequential throughput | **~127 slices/sec** |
-
-Indexing is fast because it parses headers only, stopping before `PixelData`;
-pixel decoding happens per request. The index figure is measured with a warm
-OS file cache, so it reflects parse cost rather than disk cold-start.
-
-A note on how these were measured, because it changed the answer by 25×: an
-earlier version of the benchmark used PowerShell's `Invoke-WebRequest` and
-reported 254 ms per slice. Nearly all of that was client-side overhead in the
-measuring tool. The harness now uses `HttpClient` with a kept-alive connection,
-and the result was cross-checked against `curl` (10.1 ms mean / 6.5 ms p50)
-before being published.
-
-## At real study scale
-
-The numbers above come from a 60-slice series, which is a toy. Measured
-against a **1026-slice** abdominal CT (CPTAC-CCRCC, 522 MB on disk, Explicit
-VR Little Endian, 0.898 × 0.898 × 0.625 mm):
-
-| | |
-| --- | --- |
-| Index 1026 slices | **0.59 s** including process start and SQLite inserts |
-| Level 0 volume (513 MB) | **refused — HTTP 400**, exceeds the 512 MB guard |
-| Level 1 (256×256×513, 64 MB) cold | **1.25 s** |
-| Level 1 warm, in memory | 0.053 s |
-| Level 1 warm, from disk after restart | **0.117 s** |
-| Disk cache for the whole study | 65 MB |
-| 64 MB 3D texture in browser | uploads and renders, no errors |
-
-Cold volume assembly started at 5.5 s. Decoding is embarrassingly parallel, so
-slices are decoded across cores with `rayon` into indexed chunks — never pushed
-onto a shared buffer, because slice order is the one invariant in this codebase
-that must not be disturbed. Assembled levels are then persisted, so the cost is
-paid once per study rather than once per process.
-
-Two decisions worth recording because both were measured rather than assumed:
-
-- **Unservable levels are never written to disk.** An earlier version cached
-  level 0 for every study, which for this study is a 513 MB file that the size
-  guard guarantees can never be served. The cache was larger than the source
-  data — 578 MB against 522 MB. Skipping levels over the guard brought it to
-  65 MB.
-- **zstd was measured and rejected.** It compresses a level-1 payload from
-  67 MB to 38 MB, but adds 55–90 ms of decompression to a warm path that
-  otherwise completes in ~0.12 s. A 50–80% latency penalty on an interactive
-  viewer is not worth disk that is already bounded, so the dependency was
-  removed.
-
-**What this exposes, stated plainly:**
-
-- **Full resolution is not servable.** A 1000-slice study will not fit in one
-  response or in a GPU 3D texture. The pyramid is mandatory, not an
-  optimisation, and level 0 exists only for small studies.
-- **5.5 s for level 1 is the real bottleneck.** The current path decodes all
-  1026 slices and then downsamples. It should decode and accumulate
-  incrementally, in parallel, and cache the pyramid on disk. That work is
-  unstarted.
-- **The fixed HU normalisation range is wrong.** The renderer normalises over
-  `[-1024, 3071]`, but this study reports a minimum of **−2048** — the fill
-  value scanners write outside the reconstruction circle. It currently clamps,
-  which happens to look right, but the assumption is violated by real data.
-- **The scanner table renders as anatomy.** Its ribbed core is dense enough to
-  pass a bone threshold, so it appears as a striped slab beside the patient
-  (visible in `docs/images/volume-1026slice.png`, and as bright lines under the
-  body in `docs/images/big-slice301-table-visible.png`). This is faithful
-  rendering of real data, not a bug — clinical workstations solve it with table
-  removal, which this project does not implement.
-- **Sample count must scale with volume depth.** A 513-deep volume raymarched
-  at 256 steps undersamples along z and visibly aliases. The quality slider
-  caps at 512; it should derive from the volume diagonal instead.
-
-![1026-slice study, bone transfer function](docs/images/volume-1026slice.png)
-
-## Running it
-
-Requires Rust and Node 20+.
+## Try it in about a minute
 
 ```bash
+git clone <this repo> && cd strata
 cargo build --release
 cd web && npm install && npm run build && cd ..
 
-cargo run --release -p strata-server -- --data-dir /path/to/dicom
+./scripts/fetch-sample.sh          # real CT study, ~17 MB, no account needed
+cargo run --release -p strata-server -- --data-dir data/sample
 ```
 
-Then open <http://127.0.0.1:8080>.
+Open <http://127.0.0.1:8080>. On Windows use `.\scripts\fetch-sample.ps1`.
 
-| Flag | Default | |
-| --- | --- | --- |
-| `--data-dir` | *required* | directory to scan recursively |
-| `--addr` | `127.0.0.1:8080` | listen address |
-| `--index` | `strata.sqlite` | index database path |
+The sample fetcher pulls a genuine clinical study from the National Cancer
+Institute's public archive. `--size large` gets a ~500-slice study if you want
+to see the pyramid work.
 
-### Getting test data
+## Why this exists
 
-No account, no registration. One command pulls a real study from the National
-Cancer Institute's public imaging archive:
+There is a real gap between *having* DICOM files and *looking* at them.
 
-```powershell
-.\scripts\fetch-sample.ps1              # 60-slice chest CT, ~17 MB
-.\scripts\fetch-sample.ps1 -Size large  # ~500-slice study, ~145 MB
-```
-
-```bash
-./scripts/fetch-sample.sh               # same, for Linux and macOS
-./scripts/fetch-sample.sh --size large
-```
-
-The script verifies the download is genuinely a zip before extracting and that
-the extracted files carry the DICOM magic, so a truncated transfer or an error
-page returned with HTTP 200 fails with a clear message instead of a confusing
-unzip error.
-
-## API
-
-| Endpoint | |
+| | what it costs you |
 | --- | --- |
-| `GET /api/health` | status and indexed series count |
-| `GET /api/series` | all series with dimensions and quality flags |
-| `GET /api/series/:uid` | series detail including per-slice depths |
-| `GET /api/series/:uid/slices/:n` | raw little-endian `int16` pixel data |
+| OHIF, the mature open-source viewer | requires Orthanc or another DICOMweb server, plus ingesting every study into it first |
+| 3D Slicer, Horos, other desktop viewers | multi-gigabyte install, per machine, nothing you can share |
+| Python and matplotlib | slice thumbnails, not a viewer — no windowing, no 3D, no scrolling |
 
-The slice endpoint returns Hounsfield Units when the series is calibrated and
-raw stored values otherwise, with `X-Strata-HU-Calibrated` saying which.
-Ordinal `0` is the most inferior slice; ordinals follow the geometric ordering.
+Researchers, students, and ML engineers working with public imaging datasets
+mostly end up doing the matplotlib thing, because standing up a PACS to glance
+at one study is absurd. strata is for them.
+
+## What it does
+
+**Indexes** a directory by reading DICOM *headers only*, never pixel data, so
+1026 files take 98 ms. Groups files into patients, studies, and series, and
+derives the true 3D stacking order from each slice's recorded position.
+
+**Serves** slices and downsampled volumes over HTTP as raw Hounsfield Units.
+
+**Renders** two ways:
+- *Slice view* — scroll the stack, drag to window, five radiology presets
+- *Volume view* — GPU raymarching with an editable transfer function, gradient
+  lighting, MIP mode, and a pyramid selector so a modest laptop can load 1 MB
+  instead of 64 MB
+
+<p align="center">
+  <img src="docs/images/lung-slice38.png" width="49%" alt="Lung window">
+  <img src="docs/images/volume-1026slice.png" width="49%" alt="1026-slice volume">
+</p>
+
+*Left: lung window, showing pulmonary vasculature against air-filled lung.
+Right: a 1026-slice abdominal study volume-rendered from the pyramid.*
+
+## Engineering notes
+
+The interesting problems in medical imaging are not rendering. They are the
+ways a program can be confidently, silently wrong.
+
+**Slice order comes from geometry, never `InstanceNumber`.** Each file records
+its position and orientation in patient coordinates; the slice normal is the
+cross product of the row and column direction cosines, and the sort key is the
+position projected onto it. `InstanceNumber` is unreliable in real data, and
+sorting by it produces a volume that renders perfectly and shows anatomy that
+does not exist. No crash, no error — just a wrong answer that looks right.
+
+**Non-finite values are rejected at the parse boundary.** `ImagePositionPatient`
+is a decimal *string*, and `"nan"` parses to a valid `f64` without complaint. A
+NaN sort key misplaces exactly one slice while every other slice sorts
+correctly. An early version of `slice_normal` guarded with `magnitude < 1e-9`,
+which fails open on NaN because `NaN < x` is `false` in IEEE-754.
+
+**Hounsfield calibration is never fabricated.** CT values become physically
+meaningful through `hu = raw × slope + intercept`. When those tags are absent
+the data is not in Hounsfield Units, and `hu_calibrated` stays false all the way
+to the UI. Notably `dicom-pixeldata`'s own rescale accessor silently substitutes
+an identity slope and intercept when the tags are missing — strata reads tag
+presence directly instead, so an uncalibrated series is reported as
+uncalibrated rather than quietly presented as HU.
+
+**A corrupt file does not fail a scan.** Per-file errors become warnings naming
+the file. One bad file in a 10,000-file archive must not cost the other 9,999.
+
+## Measured performance
+
+Every number is output from `scripts/bench.ps1`. Nothing here is estimated.
+
+**Hardware:** AMD Ryzen 9 9950X3D (16C/32T), 93.6 GB RAM, Windows 11.
+
+| | 60-slice study | 1026-slice study |
+| --- | --- | --- |
+| Index (parse + group + order) | 4.8 ms | **97.8 ms** |
+| Index rate | ~12,400 slices/sec | **~10,500 slices/sec** |
+| Cold start to serving | — | 0.59 s |
+| Slice fetch p50 | 6.32 ms | — |
+| Volume, cold | — | **1.25 s** |
+| Volume, warm in memory | — | 0.053 s |
+| Volume, warm from disk after restart | — | **0.117 s** |
+| Disk cache for the study | — | 65 MB |
+
+Cold volume assembly began at 5.5 s. Decoding is embarrassingly parallel, so
+slices decode across cores into indexed chunks — never pushed onto a shared
+buffer, because slice order is the one invariant that must not be disturbed.
+Assembled levels persist to disk, so the cost is paid once per study rather
+than once per process.
+
+Two decisions worth recording, both measured rather than assumed:
+
+- **Unservable pyramid levels are never written to disk.** An earlier version
+  cached level 0 for every study — for the large study that is a 513 MB file the
+  size guard guarantees can never be served. The cache was bigger than the
+  source data, 578 MB against 522 MB. Skipping levels over the guard brought it
+  to 65 MB.
+- **zstd was measured and rejected.** It compresses a level-1 payload from 67 MB
+  to 38 MB, but adds 55–90 ms of decompression to a warm path that otherwise
+  completes in ~0.12 s. A 50–80% latency penalty on an interactive viewer is not
+  worth disk that is already bounded, so the dependency was removed.
+
+## Known limits
+
+Stated plainly rather than discovered later.
+
+- **Full resolution is not servable for large studies.** A 1026-slice study is
+  513 MB at level 0, past both the response guard and practical GPU 3D texture
+  limits. The pyramid is mandatory, not an optimisation.
+- **The scanner table renders as anatomy.** Its ribbed core is dense enough to
+  pass a bone threshold, so it appears as a striped slab beside the patient.
+  This is faithful rendering of real data; clinical workstations solve it with
+  table removal, which strata does not implement.
+- **No annotation, segmentation, or measurement tools.**
+- **No DIMSE / C-STORE networking.** Reads files from disk only.
+- **Single user, no authentication.** Intended to run on your own machine.
+
+## Scope
+
+**For research and education.** Not a medical device, not FDA cleared, not
+validated for diagnosis, and not HIPAA audited. Do not use it to make clinical
+decisions.
 
 ## Architecture
 
@@ -213,46 +160,46 @@ DICOM directory
       │
       ▼
 strata-dicom ──── headers only, no pixel decode
-      │           group by SeriesInstanceUID
-      │           order by geometric depth
+      │           group by SeriesInstanceUID, order by geometric depth
       ▼
-strata-server ─── SQLite index, axum HTTP API
-      │           pixel decode + Hounsfield rescale on request
+strata-server ─── SQLite index, axum HTTP API, parallel decode,
+      │           pyramid construction, bounded on-disk cache
       ▼
-strata-web ────── int16 texture → isampler2D → windowing in the fragment shader
+strata-web ────── slice view: int16 texture → isampler2D → shader windowing
+                  volume view: R16F 3D texture → raymarcher → transfer function
 ```
 
-Windowing runs on the GPU against a true `R16I` integer texture rather than a
-pre-flattened 8-bit image, so dragging the window is free and the underlying
-Hounsfield values stay lossless for the measurement feature in a later
-milestone.
+The two render paths deliberately differ. Slices use an integer texture so
+Hounsfield values stay exact for future measurement work; the volume uses
+`R16F` because integer textures are not filterable in WebGL2 and raymarching
+without trilinear filtering aliases badly.
+
+| Endpoint | |
+| --- | --- |
+| `GET /api/health` | status, series count, cache usage |
+| `GET /api/series` | all series with dimensions and quality flags |
+| `GET /api/series/:uid` | detail including per-slice depths and scan warnings |
+| `GET /api/series/:uid/slices/:n` | one slice, raw little-endian `int16` |
+| `GET /api/series/:uid/volume?level=N` | a pyramid level, raw little-endian `int16` |
 
 ## Testing
 
 ```bash
-cargo test --workspace          # 40 tests
-cd web && npx vitest run        # 6 tests
+cargo test --workspace       # 58 tests
+cd web && npx vitest run     # 60 tests
 ```
 
-Fixtures are valid DICOM files generated programmatically at test time rather
+DICOM fixtures are valid files generated programmatically at test time rather
 than committed binaries, so each test declares exactly the malformation it
-needs — shuffled instance numbers, absent tags, missing preamble, mixed series
-in one directory.
+needs — shuffled instance numbers, absent tags, missing preamble, non-finite
+positions, two series interleaved in one directory.
 
-Tests that need real imaging data are marked `#[ignore]`:
+Tests requiring real imaging data are marked `#[ignore]`:
 
 ```bash
+./scripts/fetch-sample.sh
 cargo test -p strata-dicom --test real_data_test -- --ignored --nocapture
 ```
-
-## Verification
-
-The screenshots in `docs/images/` were checked against anatomy rather than
-merely confirmed to be non-blank. Slice 1 of 60 at −344 mm shows kidneys and
-liver; slice 60 at −49 mm shows clavicles, first ribs, and the trachea as an
-air-filled circle. Ascending slice order therefore runs inferior to superior,
-which is what DICOM patient coordinates require — the ordering guarantee
-verified against real anatomy rather than against a fixture.
 
 ## License
 

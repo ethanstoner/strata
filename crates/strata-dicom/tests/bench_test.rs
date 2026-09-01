@@ -7,8 +7,15 @@ use std::time::Instant;
 
 use strata_dicom::scan::scan_directory;
 
+/// Defaults to the small sample; override with STRATA_BENCH_DIR to time a
+/// different study, e.g. STRATA_BENCH_DIR=data/big.
 fn sample_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/sample")
+    match std::env::var("STRATA_BENCH_DIR") {
+        Ok(d) => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(d),
+        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/sample"),
+    }
 }
 
 #[test]
