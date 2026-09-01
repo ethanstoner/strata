@@ -93,7 +93,63 @@ export function requiredSteps(dims: Extent, oversample: number): number {
 // the UI predicts that rejection instead of offering a button that 400s.
 export const MAX_VOLUME_BYTES = 512 * 1024 * 1024;
 
+// Levels 0-3 are supported; mirrors the server's volume::MAX_LEVEL.
+export const MAX_PYRAMID_LEVEL = 3;
+export const PYRAMID_LEVELS = [0, 1, 2, 3] as const;
+
+/** Dims (x, y, z) of a series' volume at pyramid `level`, matching the server's output_dims: ceil(dim / 2^level) per axis. */
+export function levelDims(dimX: number, dimY: number, dimZ: number, level: number): Extent {
+  const factor = 2 ** level;
+  return {
+    x: Math.ceil(dimX / factor),
+    y: Math.ceil(dimY / factor),
+    z: Math.ceil(dimZ / factor),
+  };
+}
+
+/** Projected byte size of a volume response at `level`: raw i16 voxels, 2 bytes each. */
+export function levelBytes(dimX: number, dimY: number, dimZ: number, level: number): number {
+  const d = levelDims(dimX, dimY, dimZ, level);
+  return d.x * d.y * d.z * 2;
+}
+
 /** Projected byte size of a full-resolution (level 0) volume response: raw i16 voxels, 2 bytes each. */
 export function levelZeroBytes(dimX: number, dimY: number, sliceCount: number): number {
-  return dimX * dimY * sliceCount * 2;
+  return levelBytes(dimX, dimY, sliceCount, 0);
+}
+
+export interface LevelOption {
+  level: number;
+  dims: Extent;
+  bytes: number;
+  /** Whether the server would accept a request for this level (bytes within MAX_VOLUME_BYTES). */
+  available: boolean;
+}
+
+/** Dims/size/availability for every supported pyramid level (0-3) of a series. */
+export function computeLevelOptions(dimX: number, dimY: number, dimZ: number): LevelOption[] {
+  return PYRAMID_LEVELS.map((level) => {
+    const dims = levelDims(dimX, dimY, dimZ, level);
+    const bytes = dims.x * dims.y * dims.z * 2;
+    return { level, dims, bytes, available: bytes <= MAX_VOLUME_BYTES };
+  });
+}
+
+// Default pyramid-level budget: big enough to look detailed on a typical
+// laptop GPU, small enough that a huge study (e.g. 512x512x1026) doesn't
+// blow past it by default and hang a modest machine.
+export const DEFAULT_LEVEL_BUDGET_BYTES = 96 * 1024 * 1024;
+
+/** Picks the most-detailed (lowest-numbered) level whose byte size fits `budgetBytes`, falling back to the smallest/lightest level if none do. */
+export function chooseDefaultLevel(
+  dimX: number,
+  dimY: number,
+  dimZ: number,
+  budgetBytes: number = DEFAULT_LEVEL_BUDGET_BYTES
+): number {
+  const options = computeLevelOptions(dimX, dimY, dimZ);
+  for (const opt of options) {
+    if (opt.bytes <= budgetBytes) return opt.level;
+  }
+  return options[options.length - 1].level;
 }

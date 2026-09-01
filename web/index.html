@@ -192,9 +192,24 @@
         color: var(--text-dimmer);
       }
 
+      /*
+       * Absolutely positioned (not a static-flow sibling of the
+       * viewport-filling canvas): a static block here lands *after* the
+       * canvas in document order, and since the canvas is display:block at
+       * 100% width/height, that pushes this element below the fold —
+       * measured off-screen at y=1249 in a 1249px-tall viewport. Same
+       * reasoning applies to #error-state below.
+       */
       #empty-state {
-        color: var(--text-dimmer);
-        margin: auto;
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 24px 20%;
+        line-height: 1.6;
+        color: var(--text);
       }
 
       .mode-toggle {
@@ -259,6 +274,19 @@
         margin-top: 6px;
       }
 
+      #volume-error {
+        display: none;
+        background: var(--warn-bg);
+        border: 1px solid var(--warn-border);
+        color: var(--warn-text);
+        padding: 4px 10px;
+        font-size: 12px;
+        border-radius: 4px;
+        align-self: flex-start;
+        margin-top: 6px;
+        pointer-events: auto;
+      }
+
       .slider-row {
         margin-bottom: 14px;
         font-size: 12px;
@@ -289,6 +317,115 @@
       button.preset.full-width {
         width: 100%;
         margin-bottom: 20px;
+      }
+
+      .level-options {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 20px;
+      }
+
+      button.level-option {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        background: #1c2126;
+        color: var(--text);
+        border: 1px solid var(--panel-border);
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-size: 12px;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      button.level-option:hover:not(:disabled) {
+        border-color: var(--accent);
+        color: #fff;
+      }
+
+      button.level-option.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #04202e;
+      }
+
+      button.level-option.active .level-row span {
+        color: #04202e;
+      }
+
+      button.level-option:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .level-row {
+        display: flex;
+        justify-content: space-between;
+      }
+
+      .level-row span:last-child {
+        color: var(--text-dim);
+      }
+
+      .level-reason {
+        font-size: 11px;
+        color: var(--warn-text);
+      }
+
+      #warnings-section {
+        display: none;
+        margin-bottom: 20px;
+      }
+
+      .warnings-toggle {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: var(--warn-bg);
+        border: 1px solid var(--warn-border);
+        color: var(--warn-text);
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .warnings-list {
+        list-style: disc;
+        margin: 6px 0 0;
+        padding-left: 18px;
+        font-size: 11px;
+        color: var(--warn-text);
+      }
+
+      #series-error {
+        display: none;
+        background: var(--warn-bg);
+        border: 1px solid var(--warn-border);
+        color: var(--warn-text);
+        padding: 6px 10px;
+        font-size: 12px;
+        border-radius: 4px;
+        margin-bottom: 14px;
+      }
+
+      #error-state {
+        display: none;
+        position: absolute;
+        inset: 0;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 24px 20%;
+        color: var(--text);
+      }
+
+      #error-state p {
+        margin: 0 0 12px;
+        line-height: 1.5;
       }
     </style>
   </head>
@@ -321,18 +458,26 @@
             Uncalibrated pixel data &mdash; values are NOT Hounsfield Units
           </div>
           <div id="volume-loading" style="display: none">Loading volume&hellip;</div>
+          <div id="volume-error" style="display: none"></div>
           <div class="row">
             <span id="volume-info-label">&mdash;</span>
             <span></span>
           </div>
         </div>
         <div id="empty-state">Select a series to begin</div>
+        <div id="error-state">
+          <p id="error-message"></p>
+          <button type="button" class="preset" id="error-retry" style="display: none">Retry</button>
+        </div>
       </div>
       <aside>
         <h2>Series</h2>
+        <div id="series-error"></div>
         <dl class="info-grid" id="info-grid">
           <dt>Patient</dt>
           <dd id="info-patient">&mdash;</dd>
+          <dt>Study</dt>
+          <dd id="info-study">&mdash;</dd>
           <dt>Modality</dt>
           <dd id="info-modality">&mdash;</dd>
           <dt>Dimensions</dt>
@@ -340,6 +485,10 @@
           <dt>Slices</dt>
           <dd id="info-slices">&mdash;</dd>
         </dl>
+        <div id="warnings-section">
+          <button type="button" id="warnings-toggle" class="warnings-toggle"></button>
+          <ul id="warnings-list" class="warnings-list" style="display: none"></ul>
+        </div>
         <div id="window-presets-section">
           <h2>Window presets</h2>
           <div class="presets" id="presets"></div>
@@ -363,9 +512,8 @@
             <input type="checkbox" id="mip-toggle" />
             MIP mode (max intensity projection)
           </label>
-          <button type="button" class="preset full-width" id="load-full-detail" disabled>
-            Load full detail (level 0)
-          </button>
+          <h2>Detail level</h2>
+          <div class="level-options" id="level-options"></div>
         </div>
         <h2>Controls</h2>
         <p class="hint" id="slice-hint">

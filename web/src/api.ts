@@ -10,6 +10,24 @@ export interface SeriesSummary {
   hu_calibrated: boolean;
   uniform_spacing: boolean;
   spacing_mm: number | null;
+  series_description: string | null;
+  study_description: string | null;
+}
+
+/** Thrown for a non-2xx API response; `message` is the server's own reason text when it sent one (e.g. a 400's plain-text body). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function errorFor(res: Response, fallback: string): Promise<ApiError> {
+  const body = await res.text().catch(() => "");
+  return new ApiError(body.trim() || fallback, res.status);
 }
 
 export interface SeriesDetail extends SeriesSummary {
@@ -28,13 +46,13 @@ export interface SliceData {
 
 export async function fetchSeriesList(): Promise<SeriesSummary[]> {
   const res = await fetch("/api/series");
-  if (!res.ok) throw new Error(`GET /api/series failed: ${res.status}`);
+  if (!res.ok) throw await errorFor(res, `GET /api/series failed: ${res.status}`);
   return res.json();
 }
 
 export async function fetchSeriesDetail(seriesUid: string): Promise<SeriesDetail> {
   const res = await fetch(`/api/series/${encodeURIComponent(seriesUid)}`);
-  if (!res.ok) throw new Error(`GET /api/series/${seriesUid} failed: ${res.status}`);
+  if (!res.ok) throw await errorFor(res, `GET /api/series/${seriesUid} failed: ${res.status}`);
   return res.json();
 }
 
@@ -57,7 +75,7 @@ export async function fetchVolume(seriesUid: string, level = 1): Promise<VolumeD
     `/api/series/${encodeURIComponent(seriesUid)}/volume?level=${level}`
   );
   if (!res.ok) {
-    throw new Error(`GET /api/series/${seriesUid}/volume?level=${level} failed: ${res.status}`);
+    throw await errorFor(res, `GET /api/series/${seriesUid}/volume?level=${level} failed: ${res.status}`);
   }
   const dimX = Number(res.headers.get("X-Strata-Dim-X"));
   const dimY = Number(res.headers.get("X-Strata-Dim-Y"));
@@ -97,7 +115,7 @@ export async function fetchSlice(seriesUid: string, ordinal: number): Promise<Sl
     `/api/series/${encodeURIComponent(seriesUid)}/slices/${ordinal}`
   );
   if (!res.ok) {
-    throw new Error(`GET /api/series/${seriesUid}/slices/${ordinal} failed: ${res.status}`);
+    throw await errorFor(res, `GET /api/series/${seriesUid}/slices/${ordinal} failed: ${res.status}`);
   }
   const rows = Number(res.headers.get("X-Strata-Rows"));
   const cols = Number(res.headers.get("X-Strata-Cols"));

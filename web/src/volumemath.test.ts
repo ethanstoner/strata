@@ -5,11 +5,16 @@ import {
   physicalExtent,
   requiredSteps,
   levelZeroBytes,
+  levelDims,
+  levelBytes,
+  computeLevelOptions,
+  chooseDefaultLevel,
   HU_MIN,
   HU_MAX,
   MAX_RAYMARCH_STEPS,
   MAX_VOLUME_BYTES,
   DEFAULT_HU_RANGE,
+  DEFAULT_LEVEL_BUDGET_BYTES,
   type HuRange,
 } from "./volumemath";
 
@@ -165,5 +170,79 @@ describe("levelZeroBytes / MAX_VOLUME_BYTES", () => {
 
   it("matches the raw i16-per-voxel byte count exactly", () => {
     expect(levelZeroBytes(10, 20, 30)).toBe(10 * 20 * 30 * 2);
+  });
+});
+
+describe("levelDims / levelBytes / computeLevelOptions", () => {
+  // The measured 1026-slice study: 512x512x1026.
+  const DIM_X = 512;
+  const DIM_Y = 512;
+  const DIM_Z = 1026;
+
+  it("halves each axis (ceil) per level, matching the server's output_dims", () => {
+    expect(levelDims(DIM_X, DIM_Y, DIM_Z, 0)).toEqual({ x: 512, y: 512, z: 1026 });
+    expect(levelDims(DIM_X, DIM_Y, DIM_Z, 1)).toEqual({ x: 256, y: 256, z: 513 });
+    expect(levelDims(DIM_X, DIM_Y, DIM_Z, 2)).toEqual({ x: 128, y: 128, z: 257 });
+    expect(levelDims(DIM_X, DIM_Y, DIM_Z, 3)).toEqual({ x: 64, y: 64, z: 129 });
+  });
+
+  it("rounds an odd dimension up rather than truncating (never drops a slice)", () => {
+    // 1026 / 4 = 256.5 -> must ceil to 257, not floor to 256.
+    expect(levelDims(DIM_X, DIM_Y, DIM_Z, 2).z).toBe(257);
+  });
+
+  it("levelBytes matches dims.x * dims.y * dims.z * 2 for every level", () => {
+    for (let level = 0; level <= 3; level++) {
+      const dims = levelDims(DIM_X, DIM_Y, DIM_Z, level);
+      expect(levelBytes(DIM_X, DIM_Y, DIM_Z, level)).toBe(dims.x * dims.y * dims.z * 2);
+    }
+  });
+
+  it("levelZeroBytes agrees with levelBytes at level 0", () => {
+    expect(levelZeroBytes(DIM_X, DIM_Y, DIM_Z)).toBe(levelBytes(DIM_X, DIM_Y, DIM_Z, 0));
+  });
+
+  it("flags level 0 unavailable and level 1 available for the 512x512x1026 study (the measured case)", () => {
+    const options = computeLevelOptions(DIM_X, DIM_Y, DIM_Z);
+    const byLevel = new Map(options.map((o) => [o.level, o]));
+    expect(byLevel.get(0)!.bytes).toBeGreaterThan(MAX_VOLUME_BYTES);
+    expect(byLevel.get(0)!.available).toBe(false);
+    expect(byLevel.get(1)!.bytes).toBeLessThan(MAX_VOLUME_BYTES);
+    expect(byLevel.get(1)!.available).toBe(true);
+  });
+
+  it("returns exactly levels 0-3, each with the dims/bytes pairing", () => {
+    const options = computeLevelOptions(DIM_X, DIM_Y, DIM_Z);
+    expect(options.map((o) => o.level)).toEqual([0, 1, 2, 3]);
+    for (const opt of options) {
+      expect(opt.bytes).toBe(opt.dims.x * opt.dims.y * opt.dims.z * 2);
+    }
+  });
+
+  it("marks every level available for a small study well under the byte limit", () => {
+    const options = computeLevelOptions(512, 512, 60);
+    expect(options.every((o) => o.available)).toBe(true);
+  });
+});
+
+describe("chooseDefaultLevel", () => {
+  it("picks level 1 for the 512x512x1026 study at the default ~96MB budget", () => {
+    // level 0 is ~513MB (over the 512MB server limit, let alone the budget);
+    // level 1 is ~64MB, comfortably under DEFAULT_LEVEL_BUDGET_BYTES (96MB).
+    expect(chooseDefaultLevel(512, 512, 1026)).toBe(1);
+  });
+
+  it("picks the most detailed level that still fits a smaller budget", () => {
+    const level1Bytes = levelBytes(512, 512, 1026, 1);
+    // A budget just under level 1's size should push the choice to level 2.
+    expect(chooseDefaultLevel(512, 512, 1026, level1Bytes - 1)).toBe(2);
+  });
+
+  it("picks level 0 for a small study whose full resolution already fits the budget", () => {
+    expect(chooseDefaultLevel(512, 512, 60, DEFAULT_LEVEL_BUDGET_BYTES)).toBe(0);
+  });
+
+  it("falls back to the lightest level (3) when nothing fits the budget", () => {
+    expect(chooseDefaultLevel(512, 512, 1026, 0)).toBe(3);
   });
 });

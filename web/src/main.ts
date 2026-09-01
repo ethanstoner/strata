@@ -1,15 +1,17 @@
 import { PRESETS, type Window } from "./windowing";
-import { fetchSeriesList, fetchSeriesDetail, fetchSlice, fetchVolume } from "./api";
+import { fetchSeriesList, fetchSeriesDetail, fetchSlice, fetchVolume, ApiError } from "./api";
 import type { SeriesSummary, SeriesDetail, SliceData, VolumeData } from "./api";
 import { SliceView } from "./sliceview";
 import { VolumeView } from "./volumeview";
 import { buildTransferFunctionLUT, TRANSFER_PRESETS } from "./transferfunction";
+import { formatSeriesOption } from "./seriespicker";
 import {
   DEFAULT_HU_RANGE,
   requiredSteps,
   MAX_RAYMARCH_STEPS,
-  levelZeroBytes,
   MAX_VOLUME_BYTES,
+  computeLevelOptions,
+  chooseDefaultLevel,
   type HuRange,
 } from "./volumemath";
 
@@ -22,21 +24,26 @@ const STEP_OVERSAMPLE = 1.5;
 type ViewMode = "slices" | "volume";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#gl-canvas")!;
-const view = new SliceView(canvas);
-
 const volumeCanvas = document.querySelector<HTMLCanvasElement>("#gl-canvas-volume")!;
-const volumeView = new VolumeView(volumeCanvas);
 
 const seriesSelect = document.querySelector<HTMLSelectElement>("#series-select")!;
 const emptyState = document.querySelector<HTMLDivElement>("#empty-state")!;
+const errorState = document.querySelector<HTMLDivElement>("#error-state")!;
+const errorMessageEl = document.querySelector<HTMLParagraphElement>("#error-message")!;
+const errorRetryBtn = document.querySelector<HTMLButtonElement>("#error-retry")!;
+const seriesErrorEl = document.querySelector<HTMLDivElement>("#series-error")!;
 const uncalibratedNotice = document.querySelector<HTMLDivElement>("#uncalibrated-notice")!;
 const sliceLabel = document.querySelector<HTMLSpanElement>("#slice-label")!;
 const windowLabel = document.querySelector<HTMLSpanElement>("#window-label")!;
 const infoPatient = document.querySelector<HTMLElement>("#info-patient")!;
+const infoStudy = document.querySelector<HTMLElement>("#info-study")!;
 const infoModality = document.querySelector<HTMLElement>("#info-modality")!;
 const infoDims = document.querySelector<HTMLElement>("#info-dims")!;
 const infoSlices = document.querySelector<HTMLElement>("#info-slices")!;
 const presetsContainer = document.querySelector<HTMLDivElement>("#presets")!;
+const warningsSection = document.querySelector<HTMLDivElement>("#warnings-section")!;
+const warningsToggle = document.querySelector<HTMLButtonElement>("#warnings-toggle")!;
+const warningsList = document.querySelector<HTMLUListElement>("#warnings-list")!;
 
 const modeSlicesBtn = document.querySelector<HTMLButtonElement>("#mode-slices")!;
 const modeVolumeBtn = document.querySelector<HTMLButtonElement>("#mode-volume")!;
@@ -48,6 +55,7 @@ const volumeUncalibratedNotice = document.querySelector<HTMLDivElement>(
   "#volume-uncalibrated-notice"
 )!;
 const volumeLoading = document.querySelector<HTMLDivElement>("#volume-loading")!;
+const volumeErrorEl = document.querySelector<HTMLDivElement>("#volume-error")!;
 const volumeInfoLabel = document.querySelector<HTMLSpanElement>("#volume-info-label")!;
 const windowPresetsSection = document.querySelector<HTMLDivElement>("#window-presets-section")!;
 const qualitySlider = document.querySelector<HTMLInputElement>("#quality-slider")!;
@@ -58,7 +66,25 @@ const thresholdSlider = document.querySelector<HTMLInputElement>("#threshold-sli
 const thresholdLabel = document.querySelector<HTMLSpanElement>("#threshold-label")!;
 const tfPresetsContainer = document.querySelector<HTMLDivElement>("#tf-presets")!;
 const mipToggle = document.querySelector<HTMLInputElement>("#mip-toggle")!;
-const loadFullDetailBtn = document.querySelector<HTMLButtonElement>("#load-full-detail")!;
+const levelOptionsContainer = document.querySelector<HTMLDivElement>("#level-options")!;
+
+// WebGL2 is a hard requirement for both views (integer textures for slices,
+// sampler3D + raymarching for volume). Detect and explain before ever
+// touching the canvases, rather than letting SliceView/VolumeView throw
+// mid-construction and leave a blank/black page with only a console error.
+let view: SliceView;
+let volumeView: VolumeView;
+try {
+  view = new SliceView(canvas);
+  volumeView = new VolumeView(volumeCanvas);
+} catch (err) {
+  console.error(err);
+  showFatalError(
+    "This browser or GPU does not support WebGL2, which Strata requires to render medical images. Try a recent version of Chrome, Firefox, or Edge with hardware acceleration enabled.",
+    false
+  );
+  throw err;
+}
 
 let currentDetail: SeriesDetail | null = null;
 let currentOrdinal = 0;
@@ -184,11 +210,12 @@ function applyTransferFunctionPreset(): void {
   if (mode === "volume") volumeView.render();
 }
 
-async function loadVolumeIfNeeded(seriesUid: string, level = 1): Promise<void> {
+async function loadVolumeIfNeeded(seriesUid: string, level: number): Promise<void> {
   if (loadedVolume && loadedVolume.seriesUid === seriesUid && loadedVolume.level === level) {
     return;
   }
   volumeLoading.style.display = "block";
+  volumeErrorEl.style.display = "none";
   try {
     const data = volumeInFlight ?? fetchVolume(seriesUid, level);
     volumeInFlight = data;
@@ -250,8 +277,15 @@ async function loadVolumeIfNeeded(seriesUid: string, level = 1): Promise<void> {
     volumeView.setSteps(defaultSteps);
 
     volumeView.render();
+  } catch (err) {
+    volumeInFlight = null;
+    console.error(err);
+    volumeErrorEl.textContent =
+      err instanceof ApiError ? err.message : "Failed to load this volume level.";
+    volumeErrorEl.style.display = "block";
   } finally {
     volumeLoading.style.display = "none";
+    renderLevelOptions();
   }
 }
 
@@ -264,29 +298,118 @@ function updateWindowPresetsVisibility(): void {
   windowPresetsSection.style.display = show ? "block" : "none";
 }
 
-function updateFullDetailButton(): void {
-  if (!currentDetail) {
-    loadFullDetailBtn.disabled = true;
+function formatMb(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  return mb < 10 ? `${mb.toFixed(1)} MB` : `${Math.round(mb)} MB`;
+}
+
+/** Rebuilds the pyramid level selector for the current series, showing real dims/size per level and disabling any level the server would 400 on. */
+function renderLevelOptions(): void {
+  levelOptionsContainer.innerHTML = "";
+  if (!currentDetail) return;
+  const detail = currentDetail;
+  const limitMb = Math.round(MAX_VOLUME_BYTES / (1024 * 1024));
+  const options = computeLevelOptions(detail.cols, detail.rows, detail.slice_count);
+
+  for (const opt of options) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "level-option";
+    btn.disabled = !opt.available;
+    const isActive =
+      !!loadedVolume && loadedVolume.seriesUid === detail.series_uid && loadedVolume.level === opt.level;
+    btn.classList.toggle("active", isActive);
+
+    const row = document.createElement("div");
+    row.className = "level-row";
+    const main = document.createElement("span");
+    main.textContent = `Level ${opt.level} — ${opt.dims.x}x${opt.dims.y}x${opt.dims.z}`;
+    const size = document.createElement("span");
+    size.textContent = formatMb(opt.bytes);
+    row.append(main, size);
+    btn.appendChild(row);
+
+    if (!opt.available) {
+      const reason = document.createElement("span");
+      reason.className = "level-reason";
+      reason.textContent = `unavailable — exceeds ${limitMb} MB limit`;
+      btn.appendChild(reason);
+    }
+
+    btn.addEventListener("click", () => {
+      if (volumeInFlight) return; // one volume fetch at a time
+      void loadVolumeIfNeeded(detail.series_uid, opt.level).then(() => {
+        if (mode === "volume") volumeView.render();
+      });
+    });
+    levelOptionsContainer.appendChild(btn);
+  }
+}
+
+/** Shows/hides the non-alarming scan-warnings disclosure; renders nothing when there are none. */
+function renderWarnings(warnings: string[]): void {
+  warningsList.innerHTML = "";
+  if (warnings.length === 0) {
+    warningsSection.style.display = "none";
     return;
   }
-  const bytes = levelZeroBytes(currentDetail.cols, currentDetail.rows, currentDetail.slice_count);
-  if (bytes > MAX_VOLUME_BYTES) {
-    loadFullDetailBtn.disabled = true;
-    const mb = Math.round(bytes / (1024 * 1024));
-    const limitMb = Math.round(MAX_VOLUME_BYTES / (1024 * 1024));
-    loadFullDetailBtn.textContent = `Full detail unavailable (${mb} MB exceeds ${limitMb} MB limit)`;
-  } else {
-    loadFullDetailBtn.disabled = false;
-    loadFullDetailBtn.textContent = "Load full detail (level 0)";
+  warningsSection.style.display = "block";
+  warningsList.style.display = "none";
+  warningsToggle.textContent = `${warnings.length} scan warning${warnings.length === 1 ? "" : "s"}`;
+  for (const w of warnings) {
+    const li = document.createElement("li");
+    li.textContent = w;
+    warningsList.appendChild(li);
   }
+}
+
+/** Shows whichever canvas matches `mode`, hides the other. Called after anything (an empty/error state) may have hidden both, so real content coming back reveals the right one. */
+function applyCanvasVisibility(): void {
+  canvas.style.display = mode === "slices" ? "block" : "none";
+  volumeCanvas.style.display = mode === "volume" ? "block" : "none";
+}
+
+/**
+ * Full-viewport fatal error (unreachable server, missing WebGL2): overlays
+ * #error-state absolutely over the viewport and hides both canvases — there
+ * is nothing to render, and leaving a canvas in normal flow after this
+ * element would push it below the fold (it's a static-flow sibling of a
+ * viewport-filling canvas otherwise; see the CSS comment on #empty-state).
+ */
+function showFatalError(message: string, retryable: boolean, onRetry?: () => void): void {
+  emptyState.style.display = "none";
+  canvas.style.display = "none";
+  volumeCanvas.style.display = "none";
+  errorMessageEl.textContent = message;
+  if (retryable && onRetry) {
+    errorRetryBtn.style.display = "inline-block";
+    errorRetryBtn.onclick = () => {
+      hideFatalError();
+      onRetry();
+    };
+  } else {
+    errorRetryBtn.style.display = "none";
+    errorRetryBtn.onclick = null;
+  }
+  errorState.style.display = "flex";
+  seriesSelect.style.display = "none";
+}
+
+function hideFatalError(): void {
+  errorState.style.display = "none";
+  seriesSelect.style.display = "";
+  // Canvases stay hidden until a series actually loads (loadSeries calls
+  // applyCanvasVisibility on success) — nothing to render yet, and the
+  // black #viewport background looks identical either way in the gap.
 }
 
 function setMode(next: ViewMode): void {
   mode = next;
   modeSlicesBtn.classList.toggle("active", mode === "slices");
   modeVolumeBtn.classList.toggle("active", mode === "volume");
-  canvas.style.display = mode === "slices" ? "block" : "none";
-  volumeCanvas.style.display = mode === "volume" ? "block" : "none";
+  // Only actually shows a canvas if a series is loaded; loadSeries hid both
+  // while empty/erroring and is the one that reveals them again.
+  if (currentDetail) applyCanvasVisibility();
   document.querySelector<HTMLDivElement>("#overlay")!.style.display =
     mode === "slices" ? "flex" : "none";
   volumeOverlay.style.display = mode === "volume" ? "flex" : "none";
@@ -296,40 +419,66 @@ function setMode(next: ViewMode): void {
   updateWindowPresetsVisibility();
 
   if (mode === "volume" && currentDetail) {
-    void loadVolumeIfNeeded(currentDetail.series_uid, loadedVolume?.level ?? 1).then(() => {
+    const detail = currentDetail;
+    const level =
+      loadedVolume?.level ?? chooseDefaultLevel(detail.cols, detail.rows, detail.slice_count);
+    void loadVolumeIfNeeded(detail.series_uid, level).then(() => {
       volumeView.render();
     });
   }
 }
 
 async function loadSeries(seriesUid: string): Promise<void> {
-  emptyState.style.display = "none";
-  const detail = await fetchSeriesDetail(seriesUid);
-  currentDetail = detail;
-  currentOrdinal = 0;
-  sliceCache = new Map();
-  inFlight = new Map();
-  loadedVolume = null;
-  volumeInFlight = null;
+  seriesErrorEl.style.display = "none";
+  try {
+    const detail = await fetchSeriesDetail(seriesUid);
+    currentDetail = detail;
+    currentOrdinal = 0;
+    sliceCache = new Map();
+    inFlight = new Map();
+    loadedVolume = null;
+    volumeInFlight = null;
 
-  infoPatient.textContent = detail.patient_id ?? "—";
-  infoModality.textContent = detail.modality ?? "—";
-  infoDims.textContent = `${detail.rows} x ${detail.cols}`;
-  infoSlices.textContent = String(detail.slice_count);
+    emptyState.style.display = "none";
+    applyCanvasVisibility();
+    infoPatient.textContent = detail.patient_id ?? "—";
+    infoStudy.textContent = detail.study_description ?? "—";
+    infoModality.textContent = detail.modality ?? "—";
+    infoDims.textContent = `${detail.rows} x ${detail.cols}`;
+    infoSlices.textContent = String(detail.slice_count);
 
-  uncalibratedNotice.style.display = detail.hu_calibrated ? "none" : "block";
-  updateFullDetailButton();
+    uncalibratedNotice.style.display = detail.hu_calibrated ? "none" : "block";
+    renderWarnings(detail.warnings);
+    renderLevelOptions();
 
-  currentWindow = { ...PRESETS.softTissue };
-  highlightActivePreset(null);
-  updateWindowLabel();
-  volumeView.setWindow(currentWindow);
+    currentWindow = { ...PRESETS.softTissue };
+    highlightActivePreset(null);
+    updateWindowLabel();
+    volumeView.setWindow(currentWindow);
 
-  await showSlice(0);
+    await showSlice(0);
 
-  if (mode === "volume") {
-    await loadVolumeIfNeeded(seriesUid, 1);
-    volumeView.render();
+    if (mode === "volume") {
+      const level = chooseDefaultLevel(detail.cols, detail.rows, detail.slice_count);
+      await loadVolumeIfNeeded(seriesUid, level);
+      volumeView.render();
+    }
+  } catch (err) {
+    // Deliberately doesn't touch currentDetail/loadedVolume on failure: if a
+    // series was already loaded, it stays on screen and usable, with only
+    // this banner reporting the new selection's failure.
+    console.error(err);
+    const reason = err instanceof ApiError ? err.message : "Failed to load this series.";
+    seriesErrorEl.textContent = `Could not load series: ${reason}`;
+    seriesErrorEl.style.display = "block";
+    if (!currentDetail) {
+      // Nothing has ever loaded: replace the (otherwise blank, unrendered)
+      // canvas with the empty state rather than leaving it in the flow.
+      canvas.style.display = "none";
+      volumeCanvas.style.display = "none";
+      emptyState.textContent = "Select a series to begin";
+      emptyState.style.display = "flex";
+    }
   }
 }
 
@@ -446,9 +595,12 @@ function wireInteractions(): void {
     if (mode === "volume") volumeView.render();
   });
 
-  loadFullDetailBtn.addEventListener("click", () => {
-    if (!currentDetail) return;
-    void loadVolumeIfNeeded(currentDetail.series_uid, 0).then(() => volumeView.render());
+  warningsToggle.addEventListener("click", () => {
+    warningsList.style.display = warningsList.style.display === "none" ? "block" : "none";
+  });
+
+  seriesSelect.addEventListener("change", () => {
+    if (seriesSelect.value) void loadSeries(seriesSelect.value);
   });
 }
 
@@ -464,21 +616,24 @@ function initVolumeControls(): void {
   thresholdLabel.textContent = `${thresholdSlider.value} HU`;
 }
 
-async function init(): Promise<void> {
-  buildPresetButtons();
-  initVolumeControls();
-  wireInteractions();
-  setMode("slices");
+async function loadSeriesListAndFirst(): Promise<void> {
+  hideFatalError();
+  seriesSelect.disabled = false;
+  seriesSelect.innerHTML = "";
+  const loadingOpt = document.createElement("option");
+  loadingOpt.textContent = "Loading series…";
+  seriesSelect.appendChild(loadingOpt);
 
   let list: SeriesSummary[] = [];
   try {
     list = await fetchSeriesList();
   } catch (err) {
-    seriesSelect.innerHTML = "";
-    const opt = document.createElement("option");
-    opt.textContent = "Failed to load series list";
-    seriesSelect.appendChild(opt);
     console.error(err);
+    const message =
+      err instanceof ApiError
+        ? `The server responded with an error: ${err.message}`
+        : "Could not reach the strata server. Make sure it is running and reachable, then retry.";
+    showFatalError(message, true, () => void loadSeriesListAndFirst());
     return;
   }
 
@@ -487,21 +642,31 @@ async function init(): Promise<void> {
     const opt = document.createElement("option");
     opt.textContent = "No series available";
     seriesSelect.appendChild(opt);
+    seriesSelect.disabled = true;
+    canvas.style.display = "none";
+    volumeCanvas.style.display = "none";
+    emptyState.textContent =
+      "No DICOM series found. Point strata at a folder containing DICOM files, or run scripts/fetch-sample.ps1 to download a sample study.";
+    emptyState.style.display = "flex";
     return;
   }
 
   for (const s of list) {
     const opt = document.createElement("option");
     opt.value = s.series_uid;
-    opt.textContent = `${s.patient_id} — ${s.modality} (${s.slice_count} slices)`;
+    opt.textContent = formatSeriesOption(s);
     seriesSelect.appendChild(opt);
   }
 
-  seriesSelect.addEventListener("change", () => {
-    if (seriesSelect.value) void loadSeries(seriesSelect.value);
-  });
-
   await loadSeries(list[0].series_uid);
+}
+
+async function init(): Promise<void> {
+  buildPresetButtons();
+  initVolumeControls();
+  wireInteractions();
+  setMode("slices");
+  await loadSeriesListAndFirst();
 }
 
 void init();
