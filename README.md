@@ -1,5 +1,8 @@
 # strata
 
+[![CI](https://github.com/ethanstoner/strata/actions/workflows/ci.yml/badge.svg)](https://github.com/ethanstoner/strata/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Open any DICOM study in your browser. One binary, one folder, no setup.**
 
 Point strata at a directory of CT or MRI files and it gives you a radiology
