@@ -103,10 +103,31 @@ VR Little Endian, 0.898 × 0.898 × 0.625 mm):
 | | |
 | --- | --- |
 | Index 1026 slices | **0.59 s** including process start and SQLite inserts |
-| Level 0 volume (538 MB) | **refused — HTTP 400**, exceeds the 512 MB guard |
-| Level 1 (256×256×513, 67 MB) | **5.5 s** cold |
-| Level 2 (128×128×257, 8.4 MB) | 0.34 s warm |
-| 67 MB 3D texture in browser | uploads and renders, no errors |
+| Level 0 volume (513 MB) | **refused — HTTP 400**, exceeds the 512 MB guard |
+| Level 1 (256×256×513, 64 MB) cold | **1.25 s** |
+| Level 1 warm, in memory | 0.053 s |
+| Level 1 warm, from disk after restart | **0.117 s** |
+| Disk cache for the whole study | 65 MB |
+| 64 MB 3D texture in browser | uploads and renders, no errors |
+
+Cold volume assembly started at 5.5 s. Decoding is embarrassingly parallel, so
+slices are decoded across cores with `rayon` into indexed chunks — never pushed
+onto a shared buffer, because slice order is the one invariant in this codebase
+that must not be disturbed. Assembled levels are then persisted, so the cost is
+paid once per study rather than once per process.
+
+Two decisions worth recording because both were measured rather than assumed:
+
+- **Unservable levels are never written to disk.** An earlier version cached
+  level 0 for every study, which for this study is a 513 MB file that the size
+  guard guarantees can never be served. The cache was larger than the source
+  data — 578 MB against 522 MB. Skipping levels over the guard brought it to
+  65 MB.
+- **zstd was measured and rejected.** It compresses a level-1 payload from
+  67 MB to 38 MB, but adds 55–90 ms of decompression to a warm path that
+  otherwise completes in ~0.12 s. A 50–80% latency penalty on an interactive
+  viewer is not worth disk that is already bounded, so the dependency was
+  removed.
 
 **What this exposes, stated plainly:**
 
