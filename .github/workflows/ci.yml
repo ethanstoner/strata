@@ -11,13 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-
-      # rust-toolchain.toml pins the windows-gnu host toolchain, which is a
-      # local workaround for a machine with no MSVC install. It must not
-      # override the runner's toolchain, so it is removed for CI only.
-      - name: Remove local toolchain pin
-        run: rm -f rust-toolchain.toml
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
