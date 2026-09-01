@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/strata-dicom", "crates/strata-server"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+dicom = "0.10"
+thiserror = "2"
+walkdir = "2"
+serde = { version = "1", features = ["derive"] }

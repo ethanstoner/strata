@@ -1,0 +1,10 @@
+[package]
+name = "strata-dicom"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+dicom.workspace = true
+thiserror.workspace = true
+walkdir.workspace = true
+serde.workspace = true
