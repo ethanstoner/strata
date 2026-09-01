@@ -94,6 +94,45 @@ measuring tool. The harness now uses `HttpClient` with a kept-alive connection,
 and the result was cross-checked against `curl` (10.1 ms mean / 6.5 ms p50)
 before being published.
 
+## At real study scale
+
+The numbers above come from a 60-slice series, which is a toy. Measured
+against a **1026-slice** abdominal CT (CPTAC-CCRCC, 522 MB on disk, Explicit
+VR Little Endian, 0.898 × 0.898 × 0.625 mm):
+
+| | |
+| --- | --- |
+| Index 1026 slices | **0.59 s** including process start and SQLite inserts |
+| Level 0 volume (538 MB) | **refused — HTTP 400**, exceeds the 512 MB guard |
+| Level 1 (256×256×513, 67 MB) | **5.5 s** cold |
+| Level 2 (128×128×257, 8.4 MB) | 0.34 s warm |
+| 67 MB 3D texture in browser | uploads and renders, no errors |
+
+**What this exposes, stated plainly:**
+
+- **Full resolution is not servable.** A 1000-slice study will not fit in one
+  response or in a GPU 3D texture. The pyramid is mandatory, not an
+  optimisation, and level 0 exists only for small studies.
+- **5.5 s for level 1 is the real bottleneck.** The current path decodes all
+  1026 slices and then downsamples. It should decode and accumulate
+  incrementally, in parallel, and cache the pyramid on disk. That work is
+  unstarted.
+- **The fixed HU normalisation range is wrong.** The renderer normalises over
+  `[-1024, 3071]`, but this study reports a minimum of **−2048** — the fill
+  value scanners write outside the reconstruction circle. It currently clamps,
+  which happens to look right, but the assumption is violated by real data.
+- **The scanner table renders as anatomy.** Its ribbed core is dense enough to
+  pass a bone threshold, so it appears as a striped slab beside the patient
+  (visible in `docs/images/volume-1026slice.png`, and as bright lines under the
+  body in `docs/images/big-slice301-table-visible.png`). This is faithful
+  rendering of real data, not a bug — clinical workstations solve it with table
+  removal, which this project does not implement.
+- **Sample count must scale with volume depth.** A 513-deep volume raymarched
+  at 256 steps undersamples along z and visibly aliases. The quality slider
+  caps at 512; it should derive from the volume diagonal instead.
+
+![1026-slice study, bone transfer function](docs/images/volume-1026slice.png)
+
 ## Running it
 
 Requires Rust and Node 20+.
