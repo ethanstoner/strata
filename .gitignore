@@ -1,0 +1,28 @@
+# Internal planning docs — must be excluded by this file, not a global gitignore,
+# so the exclusion survives a fresh clone.
+docs/superpowers/
+CLAUDE.md
+PROJECT_STATUS.md
+
+# Rust
+/target
+**/*.rs.bk
+
+# Web
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local data and caches — DICOM archives are large and are never committed
+/data/
+/cache/
+*.dcm
+*.sqlite
+*.sqlite-journal
+
+# Benchmark output
+/bench-results/
+
+# OS
+.DS_Store
+Thumbs.db
