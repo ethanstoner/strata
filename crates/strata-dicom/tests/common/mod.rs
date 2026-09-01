@@ -98,8 +98,19 @@ fn put(obj: &mut InMemDicomObject, tag: Tag, vr: VR, value: PrimitiveValue) {
     obj.put(DataElement::new(tag, vr, value));
 }
 
-/// Writes a valid DICOM file into `dir`. Returns the path written.
+/// Writes a valid DICOM file into `dir` under a counter-derived name.
+/// Returns the path written.
 pub fn write_slice(dir: &Path, s: &FixtureSlice) -> PathBuf {
+    write_named(dir, s, None)
+}
+
+/// Writes a fixture under a caller-chosen filename, so a test can force
+/// directory order to disagree with geometric order.
+pub fn write_slice_as(dir: &Path, s: &FixtureSlice, filename: &str) -> PathBuf {
+    write_named(dir, s, Some(filename))
+}
+
+fn write_named(dir: &Path, s: &FixtureSlice, filename: Option<&str>) -> PathBuf {
     let n = SOP_COUNTER.fetch_add(1, Ordering::SeqCst);
     let sop_instance_uid = format!("1.2.826.0.1.3680043.8.498.9.{n}");
 
@@ -235,7 +246,10 @@ pub fn write_slice(dir: &Path, s: &FixtureSlice) -> PathBuf {
 
     let file_obj = obj.with_exact_meta(meta);
 
-    let path = dir.join(format!("{n}.dcm"));
+    let path = dir.join(match filename {
+        Some(name) => name.to_string(),
+        None => format!("{n}.dcm"),
+    });
     file_obj
         .write_to_file(&path)
         .expect("fixture object failed to write");

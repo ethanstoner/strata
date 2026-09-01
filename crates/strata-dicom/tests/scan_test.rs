@@ -131,30 +131,20 @@ fn computes_depth_from_geometry() {
 fn orders_by_geometry_when_instance_numbers_are_shuffled() {
     let dir = tempfile::tempdir().unwrap();
 
-    common::write_slice(
-        dir.path(),
-        &common::FixtureSlice {
-            position: [0.0, 0.0, 0.0],
-            instance_number: 3,
-            ..Default::default()
-        },
-    );
-    common::write_slice(
-        dir.path(),
-        &common::FixtureSlice {
-            position: [0.0, 0.0, 5.0],
-            instance_number: 1,
-            ..Default::default()
-        },
-    );
-    common::write_slice(
-        dir.path(),
-        &common::FixtureSlice {
-            position: [0.0, 0.0, 10.0],
-            instance_number: 2,
-            ..Default::default()
-        },
-    );
+    // Both filename order and write order run opposite to depth, so no
+    // directory-enumeration order can produce the expected result by accident.
+    // Only a geometric sort can.
+    for (name, z, instance_number) in [("a.dcm", 10.0, 2), ("b.dcm", 5.0, 1), ("c.dcm", 0.0, 3)] {
+        common::write_slice_as(
+            dir.path(),
+            &common::FixtureSlice {
+                position: [0.0, 0.0, z],
+                instance_number,
+                ..Default::default()
+            },
+            name,
+        );
+    }
 
     let result = scan_directory(dir.path()).expect("scan must succeed");
     assert_eq!(result.series.len(), 1);
