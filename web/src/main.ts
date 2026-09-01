@@ -95,7 +95,14 @@ const PREFETCH_RADIUS = 3;
 
 let mode: ViewMode = "slices";
 let loadedVolume: { seriesUid: string; level: number } | null = null;
-let volumeInFlight: Promise<VolumeData> | null = null;
+// The volume request currently in flight, if any. Carries which series/level
+// it is for, not just the bare promise: a response may only be applied to the
+// view if it is still the request the UI is waiting on. Without that identity
+// check, a slow volume fetch for a previously-selected series can resolve
+// after a newer series' volume has already loaded and overwrite it — leaving
+// one patient's anatomy rendered under another patient's name.
+let volumeRequest: { seriesUid: string; level: number; promise: Promise<VolumeData> } | null =
+  null;
 let currentTfPreset = "bone";
 // The actual HU range of the currently loaded volume (server-reported
 // hu_min/hu_max). Drives both the transfer function's HU->texel mapping and
@@ -214,13 +221,25 @@ async function loadVolumeIfNeeded(seriesUid: string, level: number): Promise<voi
   if (loadedVolume && loadedVolume.seriesUid === seriesUid && loadedVolume.level === level) {
     return;
   }
+  // The same series/level is already being fetched: wait for that request
+  // rather than duplicating it. Its own continuation applies the result.
+  if (volumeRequest && volumeRequest.seriesUid === seriesUid && volumeRequest.level === level) {
+    await volumeRequest.promise.catch(() => {
+      /* the owning continuation reported the failure */
+    });
+    return;
+  }
+
   volumeLoading.style.display = "block";
   volumeErrorEl.style.display = "none";
+  const request = { seriesUid, level, promise: fetchVolume(seriesUid, level) };
+  volumeRequest = request;
   try {
-    const data = volumeInFlight ?? fetchVolume(seriesUid, level);
-    volumeInFlight = data;
-    const volume = await data;
-    volumeInFlight = null;
+    const volume = await request.promise;
+    // Superseded while in flight (the user switched series, or a newer
+    // request replaced this one): discard the response instead of uploading
+    // a volume the UI no longer describes.
+    if (volumeRequest !== request) return;
 
     // hu_min == hu_max would mean a constant volume; guard so the range
     // math (division in normalizeHU) can't degrade to a NaN spread. Falls
@@ -278,14 +297,24 @@ async function loadVolumeIfNeeded(seriesUid: string, level: number): Promise<voi
 
     volumeView.render();
   } catch (err) {
-    volumeInFlight = null;
+    // A superseded request's failure is not the current view's failure;
+    // the newer request reports its own outcome.
+    if (volumeRequest !== request) return;
     console.error(err);
     volumeErrorEl.textContent =
       err instanceof ApiError ? err.message : "Failed to load this volume level.";
     volumeErrorEl.style.display = "block";
   } finally {
-    volumeLoading.style.display = "none";
-    renderLevelOptions();
+    if (volumeRequest === request) {
+      volumeRequest = null;
+    }
+    // Only the request that still owns the loading UI may tear it down —
+    // a stale continuation must not hide the spinner for a newer fetch
+    // that is still in flight.
+    if (volumeRequest === null) {
+      volumeLoading.style.display = "none";
+      renderLevelOptions();
+    }
   }
 }
 
@@ -337,7 +366,7 @@ function renderLevelOptions(): void {
     }
 
     btn.addEventListener("click", () => {
-      if (volumeInFlight) return; // one volume fetch at a time
+      if (volumeRequest) return; // one volume fetch at a time
       void loadVolumeIfNeeded(detail.series_uid, opt.level).then(() => {
         if (mode === "volume") volumeView.render();
       });
@@ -437,7 +466,10 @@ async function loadSeries(seriesUid: string): Promise<void> {
     sliceCache = new Map();
     inFlight = new Map();
     loadedVolume = null;
-    volumeInFlight = null;
+    // Orphan any volume fetch still in flight for the previous series: its
+    // continuation sees it is no longer the current request and discards
+    // the response rather than rendering it under this series' labels.
+    volumeRequest = null;
 
     emptyState.style.display = "none";
     applyCanvasVisibility();
