@@ -38,6 +38,14 @@ for cmd in curl unzip python3; do
     fi
 done
 
+# Being on PATH is not enough: Windows ships a python3 shim that resolves and
+# then fails on every call. Without this check its failure surfaces later as a
+# bogus "no series matched" message from the series query below.
+if ! python3 -c "" >/dev/null 2>&1; then
+    echo "ERROR: 'python3' is on PATH but is not a working interpreter" >&2
+    exit 1
+fi
+
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo" || exit 1
 
