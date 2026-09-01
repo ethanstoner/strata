@@ -1,4 +1,12 @@
-import { HU_MIN, HU_MAX, HU_RANGE, normalizeHU, denormalizeHU } from "./volumemath";
+import {
+  HU_MIN,
+  HU_MAX,
+  HU_RANGE,
+  DEFAULT_HU_RANGE,
+  normalizeHU,
+  denormalizeHU,
+  type HuRange,
+} from "./volumemath";
 
 /** A HU->RGBA control point. r/g/b/a are all in [0,1]. */
 export interface ControlPoint {
@@ -11,14 +19,20 @@ export interface ControlPoint {
 
 export const LUT_SIZE = 256;
 
-/** HU value that LUT texel `index` (of `size`) represents. Inverse of lutIndexForHU. */
-export function huAtLutIndex(index: number, size: number = LUT_SIZE): number {
-  return denormalizeHU(index / (size - 1));
+/**
+ * HU value that LUT texel `index` (of `size`) represents. Inverse of
+ * lutIndexForHU. `range` must be the same HU range the volume texture was
+ * normalised with (defaults to the fixed clinical range) — otherwise a
+ * control point authored at, say, 300 HU lands on the wrong texel relative
+ * to what the shader actually samples at that voxel.
+ */
+export function huAtLutIndex(index: number, size: number = LUT_SIZE, range: HuRange = DEFAULT_HU_RANGE): number {
+  return denormalizeHU(index / (size - 1), range);
 }
 
-/** Fractional LUT index (of `size`) a given HU value maps to. */
-export function lutIndexForHU(hu: number, size: number = LUT_SIZE): number {
-  return normalizeHU(hu) * (size - 1);
+/** Fractional LUT index (of `size`) a given HU value maps to, over `range` (see huAtLutIndex). */
+export function lutIndexForHU(hu: number, size: number = LUT_SIZE, range: HuRange = DEFAULT_HU_RANGE): number {
+  return normalizeHU(hu, range) * (size - 1);
 }
 
 function clamp01(v: number): number {
@@ -53,12 +67,21 @@ function sampleControlPoints(sorted: ControlPoint[], hu: number): [number, numbe
  * the volume texture's R16F values live in, so the shader can sample this
  * LUT directly with the volume's raw (normalised) texture read as the x
  * coordinate, no per-sample HU conversion needed for the transfer function.
+ *
+ * `range` must match whatever HU range the currently-loaded volume was
+ * normalised with (VolumeView.uploadVolume's huMin/huMax) so a control
+ * point's texel lines up with the texture value the shader actually reads
+ * for that HU.
  */
-export function buildTransferFunctionLUT(points: ControlPoint[], size: number = LUT_SIZE): Uint8Array {
+export function buildTransferFunctionLUT(
+  points: ControlPoint[],
+  size: number = LUT_SIZE,
+  range: HuRange = DEFAULT_HU_RANGE
+): Uint8Array {
   const sorted = [...points].sort((a, b) => a.hu - b.hu);
   const out = new Uint8Array(size * 4);
   for (let i = 0; i < size; i++) {
-    const hu = huAtLutIndex(i, size);
+    const hu = huAtLutIndex(i, size, range);
     const [r, g, b, a] = sampleControlPoints(sorted, hu);
     out[i * 4 + 0] = Math.round(clamp01(r) * 255);
     out[i * 4 + 1] = Math.round(clamp01(g) * 255);

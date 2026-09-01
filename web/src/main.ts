@@ -4,6 +4,20 @@ import type { SeriesSummary, SeriesDetail, SliceData, VolumeData } from "./api";
 import { SliceView } from "./sliceview";
 import { VolumeView } from "./volumeview";
 import { buildTransferFunctionLUT, TRANSFER_PRESETS } from "./transferfunction";
+import {
+  DEFAULT_HU_RANGE,
+  requiredSteps,
+  MAX_RAYMARCH_STEPS,
+  levelZeroBytes,
+  MAX_VOLUME_BYTES,
+  type HuRange,
+} from "./volumemath";
+
+// Extra samples per voxel along the worst-case ray, beyond the bare Nyquist
+// floor (oversample=1.0). 1.0 still visibly aliases in practice since
+// samples rarely land on voxel centres; 1.5 cleans that up without doubling
+// per-frame cost the way 2.0 would.
+const STEP_OVERSAMPLE = 1.5;
 
 type ViewMode = "slices" | "volume";
 
@@ -35,6 +49,7 @@ const volumeUncalibratedNotice = document.querySelector<HTMLDivElement>(
 )!;
 const volumeLoading = document.querySelector<HTMLDivElement>("#volume-loading")!;
 const volumeInfoLabel = document.querySelector<HTMLSpanElement>("#volume-info-label")!;
+const windowPresetsSection = document.querySelector<HTMLDivElement>("#window-presets-section")!;
 const qualitySlider = document.querySelector<HTMLInputElement>("#quality-slider")!;
 const qualityLabel = document.querySelector<HTMLSpanElement>("#quality-label")!;
 const opacitySlider = document.querySelector<HTMLInputElement>("#opacity-slider")!;
@@ -56,6 +71,11 @@ let mode: ViewMode = "slices";
 let loadedVolume: { seriesUid: string; level: number } | null = null;
 let volumeInFlight: Promise<VolumeData> | null = null;
 let currentTfPreset = "bone";
+// The actual HU range of the currently loaded volume (server-reported
+// hu_min/hu_max). Drives both the transfer function's HU->texel mapping and
+// the threshold slider's bounds; falls back to the fixed clinical range
+// before any volume has loaded.
+let currentVolumeRange: HuRange = DEFAULT_HU_RANGE;
 
 function loadSlice(seriesUid: string, ordinal: number): Promise<SliceData> {
   const cached = sliceCache.get(ordinal);
@@ -157,7 +177,10 @@ function buildTfPresetButtons(): void {
 
 function applyTransferFunctionPreset(): void {
   const points = TRANSFER_PRESETS[currentTfPreset];
-  volumeView.setTransferFunction(buildTransferFunctionLUT(points));
+  // Must build the LUT over the same HU range the volume texture was
+  // normalised with, or a control point's HU (e.g. bone at 300) lands on
+  // the wrong texel relative to what the shader samples for that voxel.
+  volumeView.setTransferFunction(buildTransferFunctionLUT(points, undefined, currentVolumeRange));
   if (mode === "volume") volumeView.render();
 }
 
@@ -171,6 +194,13 @@ async function loadVolumeIfNeeded(seriesUid: string, level = 1): Promise<void> {
     volumeInFlight = data;
     const volume = await data;
     volumeInFlight = null;
+
+    // hu_min == hu_max would mean a constant volume; guard so the range
+    // math (division in normalizeHU) can't degrade to a NaN spread. Falls
+    // back to the fixed clinical range rather than a zero-width one.
+    currentVolumeRange =
+      volume.huMax > volume.huMin ? { min: volume.huMin, max: volume.huMax } : DEFAULT_HU_RANGE;
+
     volumeView.uploadVolume(
       volume.voxels,
       volume.dimX,
@@ -178,14 +208,76 @@ async function loadVolumeIfNeeded(seriesUid: string, level = 1): Promise<void> {
       volume.dimZ,
       volume.spacingX,
       volume.spacingY,
-      volume.spacingZ
+      volume.spacingZ,
+      currentVolumeRange
     );
     loadedVolume = { seriesUid, level: volume.level };
     volumeUncalibratedNotice.style.display = volume.huCalibrated ? "none" : "block";
     volumeInfoLabel.textContent = `level ${volume.level}  ·  ${volume.dimX}x${volume.dimY}x${volume.dimZ}`;
+
+    // The transfer function's HU->texel mapping depends on the range just
+    // set above, so it has to be rebuilt for this volume.
+    applyTransferFunctionPreset();
+
+    // Threshold slider must span what this volume can actually contain —
+    // a hardcoded [-1024, 3071] both misrepresents the data (real hu_min
+    // can be well below -1024, e.g. CT's -2048 fill value) and can't reach
+    // parts of a narrower range. Clamp rather than reset so a user's chosen
+    // cutoff survives switching pyramid levels of the same series.
+    thresholdSlider.min = String(currentVolumeRange.min);
+    thresholdSlider.max = String(currentVolumeRange.max);
+    const clampedThreshold = Math.min(
+      currentVolumeRange.max,
+      Math.max(currentVolumeRange.min, Number(thresholdSlider.value))
+    );
+    thresholdSlider.value = String(clampedThreshold);
+    thresholdLabel.textContent = `${clampedThreshold} HU`;
+    volumeView.setThresholdHU(clampedThreshold);
+
+    // Default step count from the volume's actual depth: a fixed 256 is
+    // fewer than one sample per voxel along the box diagonal for a deep
+    // study (e.g. 256x256x513), which aliases as visible banding. Derive it
+    // instead, but keep the slider usable for turning quality down on weak
+    // hardware.
+    const defaultSteps = requiredSteps(
+      { x: volume.dimX, y: volume.dimY, z: volume.dimZ },
+      STEP_OVERSAMPLE
+    );
+    qualitySlider.min = "32";
+    qualitySlider.max = String(MAX_RAYMARCH_STEPS);
+    qualitySlider.value = String(defaultSteps);
+    qualityLabel.textContent = String(defaultSteps);
+    volumeView.setSteps(defaultSteps);
+
     volumeView.render();
   } finally {
     volumeLoading.style.display = "none";
+  }
+}
+
+// Window centre/width only affect the render in slice mode or in volume
+// mode's MIP path (see volumeview.ts's FRAG_SRC: uWindowCenter/Width are
+// only read under uMipMode==1). Showing the presets in normal volume mode
+// offers a control that silently does nothing when clicked.
+function updateWindowPresetsVisibility(): void {
+  const show = mode === "slices" || mipToggle.checked;
+  windowPresetsSection.style.display = show ? "block" : "none";
+}
+
+function updateFullDetailButton(): void {
+  if (!currentDetail) {
+    loadFullDetailBtn.disabled = true;
+    return;
+  }
+  const bytes = levelZeroBytes(currentDetail.cols, currentDetail.rows, currentDetail.slice_count);
+  if (bytes > MAX_VOLUME_BYTES) {
+    loadFullDetailBtn.disabled = true;
+    const mb = Math.round(bytes / (1024 * 1024));
+    const limitMb = Math.round(MAX_VOLUME_BYTES / (1024 * 1024));
+    loadFullDetailBtn.textContent = `Full detail unavailable (${mb} MB exceeds ${limitMb} MB limit)`;
+  } else {
+    loadFullDetailBtn.disabled = false;
+    loadFullDetailBtn.textContent = "Load full detail (level 0)";
   }
 }
 
@@ -201,6 +293,7 @@ function setMode(next: ViewMode): void {
   volumeSection.style.display = mode === "volume" ? "block" : "none";
   sliceHint.style.display = mode === "slices" ? "block" : "none";
   volumeHint.style.display = mode === "volume" ? "block" : "none";
+  updateWindowPresetsVisibility();
 
   if (mode === "volume" && currentDetail) {
     void loadVolumeIfNeeded(currentDetail.series_uid, loadedVolume?.level ?? 1).then(() => {
@@ -225,6 +318,7 @@ async function loadSeries(seriesUid: string): Promise<void> {
   infoSlices.textContent = String(detail.slice_count);
 
   uncalibratedNotice.style.display = detail.hu_calibrated ? "none" : "block";
+  updateFullDetailButton();
 
   currentWindow = { ...PRESETS.softTissue };
   highlightActivePreset(null);
@@ -348,6 +442,7 @@ function wireInteractions(): void {
 
   mipToggle.addEventListener("change", () => {
     volumeView.setMipMode(mipToggle.checked);
+    updateWindowPresetsVisibility();
     if (mode === "volume") volumeView.render();
   });
 

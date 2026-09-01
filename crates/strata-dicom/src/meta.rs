@@ -23,6 +23,8 @@ pub struct SliceMeta {
     pub pixel_spacing: Option<(f64, f64)>,
     pub slice_thickness: Option<f64>,
     pub depth: f64,
+    pub series_description: Option<String>,
+    pub study_description: Option<String>,
 }
 
 /// Parse a DS/IS-style multi-valued element's raw string as backslash
@@ -137,6 +139,9 @@ impl SliceMeta {
             .and_then(|el| el.to_float64().ok())
             .filter(|v| v.is_finite());
 
+        let series_description = optional_description(&obj, tags::SERIES_DESCRIPTION);
+        let study_description = optional_description(&obj, tags::STUDY_DESCRIPTION);
+
         Ok(SliceMeta {
             path: path.to_path_buf(),
             patient_id,
@@ -152,6 +157,8 @@ impl SliceMeta {
             pixel_spacing,
             slice_thickness,
             depth,
+            series_description,
+            study_description,
         })
     }
 }
@@ -164,4 +171,16 @@ fn optional_string(obj: &DefaultDicomObject, tag: Tag) -> String {
         .and_then(|el| el.to_str().ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// Free-text descriptions (SeriesDescription/StudyDescription) are display
+/// strings, not identifiers, so unlike `optional_string` a present-but-blank
+/// tag collapses to `None` too: real scanners write `" "` here, and a UI
+/// showing an empty label is no more informative than showing none at all.
+fn optional_description(obj: &DefaultDicomObject, tag: Tag) -> Option<String> {
+    obj.element(tag)
+        .ok()
+        .and_then(|el| el.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }

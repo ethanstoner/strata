@@ -1,5 +1,5 @@
 import type { Window } from "./windowing";
-import { normalizeHU, physicalExtent } from "./volumemath";
+import { normalizeHU, physicalExtent, HU_MIN, HU_MAX, MAX_RAYMARCH_STEPS, type HuRange } from "./volumemath";
 import { floatToHalf } from "./float16";
 
 const VERT_SRC = `#version 300 es
@@ -38,17 +38,22 @@ uniform float uReferenceStep;
 uniform int uMipMode;
 uniform float uWindowCenter;
 uniform float uWindowWidth;
+// The volume's actual HU range (server-reported hu_min/hu_max, not a fixed
+// clinical constant — see volumemath.ts's normalizeHU). Must match the range
+// uploadVolume() normalised the 3D texture with, or the HU reconstruction
+// below disagrees with what's actually in the texture.
+uniform float uHuMin;
+uniform float uHuRange;
 
 in vec2 vUv;
 out vec4 frag;
 
-const float HU_MIN = -1024.0;
-const float HU_MAX = 3071.0;
-const float HU_RANGE = HU_MAX - HU_MIN;
 // Hard cap on the loop trip count. WebGL2/GLSL ES 3.00 fragment shaders do
 // allow non-constant loop bounds, but a fixed upper bound with an early
-// break is the safest pattern across driver compilers; uSteps (the quality
-// slider) is always well under this.
+// break is the safest pattern across driver compilers. uSteps (the quality
+// slider) is clamped to this same ceiling on the JS side (see
+// volumemath.ts's MAX_RAYMARCH_STEPS) so a deep volume's computed default
+// can approach but never exceed it.
 const int MAX_STEPS = 2048;
 
 vec3 gradientAt(vec3 tc) {
@@ -107,7 +112,7 @@ void main() {
     if (uMipMode == 1) {
       mipValue = max(mipValue, n);
     } else {
-      float hu = n * HU_RANGE + HU_MIN;
+      float hu = n * uHuRange + uHuMin;
       if (hu >= uThresholdHU) {
         vec4 tf = texture(uTransferFunction, vec2(n, 0.5));
         float aSample = tf.a * uOpacityScale;
@@ -141,7 +146,7 @@ void main() {
   }
 
   if (uMipMode == 1) {
-    float hu = mipValue * HU_RANGE + HU_MIN;
+    float hu = mipValue * uHuRange + uHuMin;
     float safeWidth = uWindowWidth <= 0.0 ? 1.0 : uWindowWidth;
     float g = clamp((hu - (uWindowCenter - safeWidth * 0.5)) / safeWidth, 0.0, 1.0);
     frag = vec4(g, g, g, 1.0);
@@ -197,6 +202,10 @@ export class VolumeView {
   private boxMin: Vec3 = { x: -0.5, y: -0.5, z: -0.5 };
   private boxMax: Vec3 = { x: 0.5, y: 0.5, z: 0.5 };
   private referenceStep = 1 / 256;
+  // HU range the currently-uploaded volume texture was normalised with;
+  // defaults to the fixed clinical range until a real volume is loaded.
+  private huMin: number = HU_MIN;
+  private huRangeSpan: number = HU_MAX - HU_MIN;
 
   // Orbit camera state, spherical around the box centre (origin).
   private azimuth = 0.6;
@@ -255,8 +264,9 @@ export class VolumeView {
     // R16F + HALF_FLOAT (not R16I like the 2D slice path) because integer
     // textures aren't filterable in WebGL2, and raymarching without
     // trilinear filtering produces heavy blocky aliasing. HU is normalised
-    // to [0,1] on the CPU first; half-float's ~11-bit mantissa over that
-    // range is lossless against the ~4096 distinct HU values.
+    // to [0,1] on the CPU first (over the volume's actual hu_min/hu_max, see
+    // uploadVolume); half-float's ~11-bit mantissa over [0,1] is lossless
+    // against the low-thousands of distinct HU values any real CT range has.
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -291,6 +301,8 @@ export class VolumeView {
       "uMipMode",
       "uWindowCenter",
       "uWindowWidth",
+      "uHuMin",
+      "uHuRange",
     ]) {
       this.uniforms[name] = gl.getUniformLocation(program, name);
     }
@@ -300,7 +312,14 @@ export class VolumeView {
     gl.uniform1i(this.uniforms.uTransferFunction, 1);
   }
 
-  /** Uploads a raw HU volume (x fastest, then y, then z) and sizes the box. */
+  /**
+   * Uploads a raw HU volume (x fastest, then y, then z) and sizes the box.
+   * `range` is the volume's actual hu_min/hu_max (server-reported); it's
+   * what the CPU-side normalisation below uses, and it must be handed to
+   * the shader (see render()) so its HU reconstruction agrees with what got
+   * baked into the texture. Defaults to the fixed clinical range for
+   * callers that don't have a per-volume range.
+   */
   uploadVolume(
     voxels: Int16Array,
     dimX: number,
@@ -308,16 +327,19 @@ export class VolumeView {
     dimZ: number,
     spacingX: number,
     spacingY: number,
-    spacingZ: number
+    spacingZ: number,
+    range: HuRange = { min: HU_MIN, max: HU_MAX }
   ): void {
     const gl = this.gl;
     this.dimX = dimX;
     this.dimY = dimY;
     this.dimZ = dimZ;
+    this.huMin = range.min;
+    this.huRangeSpan = range.max - range.min;
 
     const half = new Uint16Array(voxels.length);
     for (let i = 0; i < voxels.length; i++) {
-      half[i] = floatToHalf(normalizeHU(voxels[i]));
+      half[i] = floatToHalf(normalizeHU(voxels[i], range));
     }
 
     gl.bindTexture(gl.TEXTURE_3D, this.volumeTexture);
@@ -362,11 +384,12 @@ export class VolumeView {
   }
 
   setSteps(steps: number): void {
-    this.steps = Math.max(8, Math.round(steps));
+    this.steps = Math.min(MAX_RAYMARCH_STEPS, Math.max(8, Math.round(steps)));
   }
 
+  /** Density multiplier on the transfer function's authored alpha; bounded [0,1] — opacity can't exceed "as authored". */
   setOpacityScale(scale: number): void {
-    this.opacityScale = scale;
+    this.opacityScale = Math.min(1, Math.max(0, scale));
   }
 
   setThresholdHU(hu: number): void {
@@ -443,6 +466,8 @@ export class VolumeView {
     gl.uniform1i(this.uniforms.uMipMode, this.mipMode ? 1 : 0);
     gl.uniform1f(this.uniforms.uWindowCenter, this.window.center);
     gl.uniform1f(this.uniforms.uWindowWidth, this.window.width);
+    gl.uniform1f(this.uniforms.uHuMin, this.huMin);
+    gl.uniform1f(this.uniforms.uHuRange, this.huRangeSpan);
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }

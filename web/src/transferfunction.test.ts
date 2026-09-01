@@ -6,7 +6,7 @@ import {
   LUT_SIZE,
   TRANSFER_PRESETS,
 } from "./transferfunction";
-import { HU_MIN, HU_MAX } from "./volumemath";
+import { HU_MIN, HU_MAX, type HuRange } from "./volumemath";
 
 describe("huAtLutIndex / lutIndexForHU", () => {
   it("are inverses at the LUT endpoints", () => {
@@ -19,6 +19,20 @@ describe("huAtLutIndex / lutIndexForHU", () => {
   it("round-trips an arbitrary index", () => {
     const hu = huAtLutIndex(200);
     expect(lutIndexForHU(hu)).toBeCloseTo(200, 6);
+  });
+
+  it("a bone control point at 300 HU lands back at 300 HU under a real per-volume range, not just the fixed default", () => {
+    // Measured real study: hu_min -2048, well outside the fixed [-1024,
+    // 3071] the LUT used to always assume. If huAtLutIndex/lutIndexForHU
+    // silently kept using the fixed range while the volume texture was
+    // normalised with the real one, a control point authored at 300 HU
+    // would land on the wrong texel relative to what the shader samples.
+    const range: HuRange = { min: -2048, max: 3071 };
+    const idx = lutIndexForHU(300, LUT_SIZE, range);
+    expect(huAtLutIndex(idx, LUT_SIZE, range)).toBeCloseTo(300, 6);
+    // And that index must differ from the fixed-range mapping, proving the
+    // range parameter actually changes the result rather than being ignored.
+    expect(idx).not.toBeCloseTo(lutIndexForHU(300), 3);
   });
 });
 
@@ -74,6 +88,23 @@ describe("buildTransferFunctionLUT", () => {
     const idx = Math.round(lutIndexForHU(1500));
     expect(lut[idx * 4 + 3]).toBeGreaterThan(240);
     expect(lut[idx * 4 + 0]).toBeGreaterThan(240);
+  });
+
+  it("places a control point correctly when built against a real per-volume range", () => {
+    const range: HuRange = { min: -2048, max: 3071 };
+    const idx = 200;
+    const hu = huAtLutIndex(idx, LUT_SIZE, range);
+    const lut = buildTransferFunctionLUT(
+      [
+        { hu: range.min, r: 0, g: 0, b: 0, a: 0 },
+        { hu, r: 0.2, g: 0.4, b: 0.6, a: 0.8 },
+        { hu: range.max, r: 0.2, g: 0.4, b: 0.6, a: 0.8 },
+      ],
+      LUT_SIZE,
+      range
+    );
+    expect(lut[idx * 4 + 0]).toBe(Math.round(0.2 * 255));
+    expect(lut[idx * 4 + 3]).toBe(Math.round(0.8 * 255));
   });
 
   it("soft preset gives semi-transparent warm tones to soft tissue", () => {

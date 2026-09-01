@@ -30,10 +30,11 @@ fn scans_a_real_series() {
 
     for s in &result.series {
         println!(
-            "  uid={}\n    slices={} dims={}x{} modality={}\n    uniform_spacing={} spacing_mm={:?}\n    hu_calibrated={} is_volume={} warnings={}",
+            "  uid={}\n    slices={} dims={}x{} modality={}\n    uniform_spacing={} spacing_mm={:?}\n    hu_calibrated={} is_volume={} warnings={}\n    series_description={:?} study_description={:?}",
             s.series_uid, s.slices.len(), s.rows, s.cols, s.modality,
             s.uniform_spacing, s.spacing_mm, s.hu_calibrated, s.is_volume,
             s.warnings.len(),
+            s.series_description, s.study_description,
         );
         for w in &s.warnings {
             println!("      WARN {w}");

@@ -414,3 +414,171 @@ fn parses_dicom_without_a_128_byte_preamble() {
         }
     }
 }
+
+#[test]
+fn extracts_series_and_study_description() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = common::FixtureSlice {
+        series_description: "Chest Routine #1".to_string(),
+        study_description: "CT Chest".to_string(),
+        ..Default::default()
+    };
+    let p = common::write_slice(dir.path(), &f);
+
+    let meta = SliceMeta::from_file(&p).expect("valid fixture must parse");
+
+    assert_eq!(meta.series_description, Some("Chest Routine #1".to_string()));
+    assert_eq!(meta.study_description, Some("CT Chest".to_string()));
+}
+
+#[test]
+fn absent_description_is_none_not_empty_string() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let no_series = common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            omit_tag: Some("SeriesDescription"),
+            ..Default::default()
+        },
+    );
+    let meta = SliceMeta::from_file(&no_series).expect("valid fixture must parse");
+    assert_eq!(
+        meta.series_description, None,
+        "an absent tag must be None, not an empty-string placeholder"
+    );
+
+    let no_study = common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            omit_tag: Some("StudyDescription"),
+            ..Default::default()
+        },
+    );
+    let meta = SliceMeta::from_file(&no_study).expect("valid fixture must parse");
+    assert_eq!(
+        meta.study_description, None,
+        "an absent tag must be None, not an empty-string placeholder"
+    );
+}
+
+#[test]
+fn whitespace_only_description_normalises_to_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = common::FixtureSlice {
+        series_description: "   ".to_string(),
+        study_description: "   ".to_string(),
+        ..Default::default()
+    };
+    let p = common::write_slice(dir.path(), &f);
+
+    let meta = SliceMeta::from_file(&p).expect("valid fixture must parse");
+
+    assert_eq!(meta.series_description, None);
+    assert_eq!(meta.study_description, None);
+}
+
+#[test]
+fn series_with_disagreeing_descriptions_warns_and_takes_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let series_uid = "1.2.826.0.1.3680043.8.498.5555".to_string();
+
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            series_uid: series_uid.clone(),
+            position: [0.0, 0.0, 0.0],
+            series_description: "Faza tetnicza 5.0 miekkie".to_string(),
+            ..Default::default()
+        },
+    );
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            series_uid: series_uid.clone(),
+            position: [0.0, 0.0, 5.0],
+            series_description: "Faza zylna 5.0 miekkie".to_string(),
+            ..Default::default()
+        },
+    );
+
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
+    let manifest = &result.series[0];
+
+    // Slices are sorted by depth before the first is picked, so the z=0.0
+    // slice's description wins, matching the rows/cols mismatch convention.
+    assert_eq!(
+        manifest.series_description,
+        Some("Faza tetnicza 5.0 miekkie".to_string()),
+        "must take the first (lowest-depth) slice's description"
+    );
+    assert!(
+        manifest
+            .warnings
+            .iter()
+            .any(|w| w.contains(&series_uid) && w.contains("description")),
+        "expected a warning naming the series about disagreeing descriptions, got {:?}",
+        manifest.warnings
+    );
+}
+
+#[test]
+fn two_series_same_patient_are_distinguishable_by_description() {
+    let dir = tempfile::tempdir().unwrap();
+    let series_a = "1.2.826.0.1.3680043.8.498.6001".to_string();
+    let series_b = "1.2.826.0.1.3680043.8.498.6002".to_string();
+    let patient = "FIXTURE-PATIENT-SHARED".to_string();
+
+    for i in 0..2 {
+        let z = i as f64 * 5.0;
+        common::write_slice(
+            dir.path(),
+            &common::FixtureSlice {
+                series_uid: series_a.clone(),
+                patient_id: patient.clone(),
+                position: [0.0, 0.0, z],
+                series_description: "Chest Routine #1".to_string(),
+                ..Default::default()
+            },
+        );
+        common::write_slice(
+            dir.path(),
+            &common::FixtureSlice {
+                series_uid: series_b.clone(),
+                patient_id: patient.clone(),
+                position: [0.0, 0.0, z],
+                series_description: "Chest Routine #2".to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 2, "expected two distinct series manifests");
+
+    let manifest_a = result
+        .series
+        .iter()
+        .find(|m| m.series_uid == series_a)
+        .expect("series_a must be present");
+    let manifest_b = result
+        .series
+        .iter()
+        .find(|m| m.series_uid == series_b)
+        .expect("series_b must be present");
+
+    assert_eq!(manifest_a.patient_id, patient);
+    assert_eq!(manifest_b.patient_id, patient);
+    assert_eq!(manifest_a.modality, manifest_b.modality);
+    assert_eq!(manifest_a.slices.len(), manifest_b.slices.len());
+
+    assert_eq!(
+        manifest_a.series_description,
+        Some("Chest Routine #1".to_string())
+    );
+    assert_eq!(
+        manifest_b.series_description,
+        Some("Chest Routine #2".to_string())
+    );
+}

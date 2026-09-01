@@ -8,6 +8,8 @@ pub struct SeriesManifest {
     pub modality: String,
     pub rows: u16,
     pub cols: u16,
+    pub series_description: Option<String>,
+    pub study_description: Option<String>,
     pub slices: Vec<SliceMeta>,
     pub uniform_spacing: bool,
     pub spacing_mm: Option<f64>,
@@ -43,11 +45,21 @@ impl SeriesManifest {
         let modality = first.modality.clone();
         let rows = first.rows;
         let cols = first.cols;
+        let series_description = first.series_description.clone();
+        let study_description = first.study_description.clone();
 
         let mut warnings = Vec::new();
         if slices.iter().any(|s| s.rows != rows || s.cols != cols) {
             warnings.push(format!(
                 "series {series_uid} contains slices with mismatched rows/cols; cannot form a coherent volume"
+            ));
+        }
+        if slices
+            .iter()
+            .any(|s| s.series_description != series_description)
+        {
+            warnings.push(format!(
+                "series {series_uid} contains slices with mismatched series description; using the first"
             ));
         }
 
@@ -62,6 +74,8 @@ impl SeriesManifest {
             modality,
             rows,
             cols,
+            series_description,
+            study_description,
             slices,
             uniform_spacing,
             spacing_mm,

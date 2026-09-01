@@ -1,18 +1,42 @@
-// Fixed HU range the whole volume pipeline normalises against. Chosen to
-// cover the full clinical range (air floor, dense-bone/contrast ceiling)
-// with headroom, matching the raymarcher shader's HU_MIN/HU_MAX constants.
+// Fixed HU range used when the server hasn't reported a per-volume range
+// (e.g. no volume loaded yet). Chosen to cover the full clinical range (air
+// floor, dense-bone/contrast ceiling) with headroom. Real studies report
+// their own hu_min/hu_max (see api.ts's X-Strata-HU-Min/Max headers) which
+// can and do fall outside this window — e.g. -2048 is a common CT
+// out-of-reconstruction-circle fill value — so this is a fallback, not an
+// assumption baked into the math.
 export const HU_MIN = -1024;
 export const HU_MAX = 3071;
 export const HU_RANGE = HU_MAX - HU_MIN;
 
-/** Maps an HU value onto [0,1] over the fixed clinical range, clamping outside it. */
-export function normalizeHU(hu: number): number {
-  return Math.min(1, Math.max(0, (hu - HU_MIN) / HU_RANGE));
+export interface HuRange {
+  min: number;
+  max: number;
 }
 
-/** Inverse of normalizeHU; matches the shader's `hu = n * (3071+1024) - 1024`. */
-export function denormalizeHU(n: number): number {
-  return n * HU_RANGE + HU_MIN;
+export const DEFAULT_HU_RANGE: HuRange = { min: HU_MIN, max: HU_MAX };
+
+/**
+ * Maps an HU value onto [0,1] over `range`, clamping outside it. Defaults to
+ * the fixed clinical range for callers that don't have a per-volume range
+ * (or haven't loaded a volume yet).
+ *
+ * Guards `range.max === range.min` (a constant volume, or an unset range) —
+ * without this, the division below produces NaN, which the 3D texture would
+ * happily upload and render as an undefined/garbage voxel rather than
+ * failing loudly.
+ */
+export function normalizeHU(hu: number, range: HuRange = DEFAULT_HU_RANGE): number {
+  const span = range.max - range.min;
+  if (span <= 0) return 0;
+  return Math.min(1, Math.max(0, (hu - range.min) / span));
+}
+
+/** Inverse of normalizeHU over the same `range`. */
+export function denormalizeHU(n: number, range: HuRange = DEFAULT_HU_RANGE): number {
+  const span = range.max - range.min;
+  if (span <= 0) return range.min;
+  return n * span + range.min;
 }
 
 export interface Extent {
@@ -41,4 +65,35 @@ export function physicalExtent(
   const max = Math.max(px, py, pz);
   if (max <= 0) return { x: 0, y: 0, z: 0 };
   return { x: px / max, y: py / max, z: pz / max };
+}
+
+// Hard ceiling on the raymarch step count. Independent of how large the
+// volume's diagonal gets (a deep, high-res study can demand thousands of
+// steps per pixel), this keeps a single frame's worst-case cost bounded so a
+// low-end GPU doesn't hang the tab; must match the shader's MAX_STEPS trip
+// count in volumeview.ts.
+export const MAX_RAYMARCH_STEPS = 2048;
+
+/**
+ * Minimum raymarch step count for ~one sample per voxel along the worst-case
+ * ray (the box diagonal, in voxel units — the longest line segment that can
+ * cross the volume), times an oversampling factor. `oversample = 1.0` is the
+ * Nyquist floor; a ray marching at exactly one step per voxel still aliases
+ * in practice because samples rarely land on voxel centres, so 1.5-2.0 is
+ * recommended for a visibly clean render. Capped at MAX_RAYMARCH_STEPS.
+ */
+export function requiredSteps(dims: Extent, oversample: number): number {
+  const diagonal = Math.sqrt(dims.x * dims.x + dims.y * dims.y + dims.z * dims.z);
+  const steps = Math.ceil(diagonal * oversample);
+  return Math.min(MAX_RAYMARCH_STEPS, Math.max(1, steps));
+}
+
+// Mirrors the server's strata-server/src/volume.rs MAX_OUTPUT_BYTES guard —
+// the server rejects a volume request whose response would exceed this, so
+// the UI predicts that rejection instead of offering a button that 400s.
+export const MAX_VOLUME_BYTES = 512 * 1024 * 1024;
+
+/** Projected byte size of a full-resolution (level 0) volume response: raw i16 voxels, 2 bytes each. */
+export function levelZeroBytes(dimX: number, dimY: number, sliceCount: number): number {
+  return dimX * dimY * sliceCount * 2;
 }

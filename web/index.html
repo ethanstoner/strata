@@ -181,6 +181,11 @@
         font-weight: 600;
       }
 
+      button.preset:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
       .hint {
         font-size: 11px;
         line-height: 1.5;
@@ -335,17 +340,19 @@
           <dt>Slices</dt>
           <dd id="info-slices">&mdash;</dd>
         </dl>
-        <h2>Window presets</h2>
-        <div class="presets" id="presets"></div>
+        <div id="window-presets-section">
+          <h2>Window presets</h2>
+          <div class="presets" id="presets"></div>
+        </div>
         <div id="volume-section" style="display: none">
           <h2>Transfer function</h2>
           <div class="presets" id="tf-presets"></div>
           <div class="slider-row">
-            <label for="opacity-slider">Opacity <span id="opacity-label">1.00</span></label>
-            <input type="range" id="opacity-slider" min="0" max="300" value="100" />
+            <label for="opacity-slider">Density <span id="opacity-label">1.00</span></label>
+            <input type="range" id="opacity-slider" min="0" max="100" value="100" />
           </div>
           <div class="slider-row">
-            <label for="threshold-slider">Threshold <span id="threshold-label">-1024 HU</span></label>
+            <label for="threshold-slider">Hide below <span id="threshold-label">-1024 HU</span></label>
             <input type="range" id="threshold-slider" min="-1024" max="3071" value="-1024" />
           </div>
           <div class="slider-row">
@@ -356,7 +363,7 @@
             <input type="checkbox" id="mip-toggle" />
             MIP mode (max intensity projection)
           </label>
-          <button type="button" class="preset full-width" id="load-full-detail">
+          <button type="button" class="preset full-width" id="load-full-detail" disabled>
             Load full detail (level 0)
           </button>
         </div>

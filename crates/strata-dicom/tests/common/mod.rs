@@ -33,6 +33,8 @@ pub struct FixtureSlice {
     pub rescale: Option<(f64, f64)>,
     pub rows: u16,
     pub cols: u16,
+    pub series_description: String,
+    pub study_description: String,
     /// Element keyword (e.g. "ImageOrientationPatient") to leave off the
     /// written file entirely, so tests can exercise MissingTag paths.
     pub omit_tag: Option<&'static str>,
@@ -50,6 +52,8 @@ impl Default for FixtureSlice {
             rescale: Some((1.0, -1024.0)),
             rows: 64,
             cols: 64,
+            series_description: "FIXTURE-SERIES-DESCRIPTION".to_string(),
+            study_description: "FIXTURE-STUDY-DESCRIPTION".to_string(),
             omit_tag: None,
         }
     }
@@ -159,6 +163,22 @@ pub fn write_slice(dir: &Path, s: &FixtureSlice) -> PathBuf {
             tags::IMAGE_ORIENTATION_PATIENT,
             VR::DS,
             ds(&s.orientation),
+        );
+    }
+    if !omit("SeriesDescription") {
+        put(
+            &mut obj,
+            tags::SERIES_DESCRIPTION,
+            VR::LO,
+            text_value(&s.series_description),
+        );
+    }
+    if !omit("StudyDescription") {
+        put(
+            &mut obj,
+            tags::STUDY_DESCRIPTION,
+            VR::LO,
+            text_value(&s.study_description),
         );
     }
     put(&mut obj, tags::PIXEL_SPACING, VR::DS, ds(&[1.0, 1.0]));
