@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 strata-dicom = { path = "../strata-dicom" }
+dicom.workspace = true
 rusqlite.workspace = true
 anyhow.workspace = true
 serde.workspace = true

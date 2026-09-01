@@ -115,6 +115,40 @@ async fn unknown_series_returns_404_not_500() {
 }
 
 #[tokio::test]
+async fn unknown_series_slice_returns_404_not_500() {
+    let app = app_with(&[]);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/series/does-not-exist/slices/0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn unknown_ordinal_returns_404_not_500() {
+    let app = app_with(&[make_manifest(true)]);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/series/SERIES1/slices/999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn health_reports_series_count() {
     let app = app_with(&[make_manifest(true)]);
 

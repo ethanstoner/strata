@@ -2,26 +2,25 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path as AxumPath, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use tower_http::services::ServeDir;
 
 use crate::index::Index;
+use crate::pixels::decode_slice;
 
 /// Shared across handlers; `Mutex` because `rusqlite::Connection` isn't `Sync`.
 pub type SharedIndex = Arc<Mutex<Index>>;
 
-/// Builds the API router. Task 9's slice pixel-data endpoint should be added
-/// here as another `.route(...)` alongside `/api/series/:uid`, e.g.
-/// `/api/series/:uid/slices/:ordinal` — it can resolve a file with
-/// `Index::slice_path` on the same `SharedIndex` state.
+/// Builds the API router.
 pub fn build_router(index: SharedIndex) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/series", get(list_series))
         .route("/api/series/:uid", get(get_series))
+        .route("/api/series/:uid/slices/:ordinal", get(get_slice))
         .with_state(index)
 }
 
@@ -68,4 +67,41 @@ async fn get_series(
         Some(d) => Json(d).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     })
+}
+
+async fn get_slice(
+    State(index): State<SharedIndex>,
+    AxumPath((uid, ordinal)): AxumPath<(String, u32)>,
+) -> Result<Response, AppError> {
+    let path = index.lock().unwrap().slice_path(&uid, ordinal)?;
+    let Some(path) = path else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+
+    let slice = decode_slice(&path)?;
+
+    let mut bytes = Vec::with_capacity(slice.data.len() * 2);
+    for v in &slice.data {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "content-type",
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    headers.insert(
+        "x-strata-rows",
+        HeaderValue::from_str(&slice.rows.to_string()).unwrap(),
+    );
+    headers.insert(
+        "x-strata-cols",
+        HeaderValue::from_str(&slice.cols.to_string()).unwrap(),
+    );
+    headers.insert(
+        "x-strata-hu-calibrated",
+        HeaderValue::from_static(if slice.hu_calibrated { "true" } else { "false" }),
+    );
+
+    Ok((StatusCode::OK, headers, bytes).into_response())
 }

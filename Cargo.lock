@@ -2088,6 +2088,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "dicom",
  "rusqlite",
  "serde",
  "serde_json",
