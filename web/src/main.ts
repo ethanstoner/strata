@@ -1,10 +1,17 @@
 import { PRESETS, type Window } from "./windowing";
-import { fetchSeriesList, fetchSeriesDetail, fetchSlice } from "./api";
-import type { SeriesSummary, SeriesDetail, SliceData } from "./api";
+import { fetchSeriesList, fetchSeriesDetail, fetchSlice, fetchVolume } from "./api";
+import type { SeriesSummary, SeriesDetail, SliceData, VolumeData } from "./api";
 import { SliceView } from "./sliceview";
+import { VolumeView } from "./volumeview";
+import { buildTransferFunctionLUT, TRANSFER_PRESETS } from "./transferfunction";
+
+type ViewMode = "slices" | "volume";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#gl-canvas")!;
 const view = new SliceView(canvas);
+
+const volumeCanvas = document.querySelector<HTMLCanvasElement>("#gl-canvas-volume")!;
+const volumeView = new VolumeView(volumeCanvas);
 
 const seriesSelect = document.querySelector<HTMLSelectElement>("#series-select")!;
 const emptyState = document.querySelector<HTMLDivElement>("#empty-state")!;
@@ -17,12 +24,38 @@ const infoDims = document.querySelector<HTMLElement>("#info-dims")!;
 const infoSlices = document.querySelector<HTMLElement>("#info-slices")!;
 const presetsContainer = document.querySelector<HTMLDivElement>("#presets")!;
 
+const modeSlicesBtn = document.querySelector<HTMLButtonElement>("#mode-slices")!;
+const modeVolumeBtn = document.querySelector<HTMLButtonElement>("#mode-volume")!;
+const sliceHint = document.querySelector<HTMLElement>("#slice-hint")!;
+const volumeHint = document.querySelector<HTMLElement>("#volume-hint")!;
+const volumeSection = document.querySelector<HTMLDivElement>("#volume-section")!;
+const volumeOverlay = document.querySelector<HTMLDivElement>("#volume-overlay")!;
+const volumeUncalibratedNotice = document.querySelector<HTMLDivElement>(
+  "#volume-uncalibrated-notice"
+)!;
+const volumeLoading = document.querySelector<HTMLDivElement>("#volume-loading")!;
+const volumeInfoLabel = document.querySelector<HTMLSpanElement>("#volume-info-label")!;
+const qualitySlider = document.querySelector<HTMLInputElement>("#quality-slider")!;
+const qualityLabel = document.querySelector<HTMLSpanElement>("#quality-label")!;
+const opacitySlider = document.querySelector<HTMLInputElement>("#opacity-slider")!;
+const opacityLabel = document.querySelector<HTMLSpanElement>("#opacity-label")!;
+const thresholdSlider = document.querySelector<HTMLInputElement>("#threshold-slider")!;
+const thresholdLabel = document.querySelector<HTMLSpanElement>("#threshold-label")!;
+const tfPresetsContainer = document.querySelector<HTMLDivElement>("#tf-presets")!;
+const mipToggle = document.querySelector<HTMLInputElement>("#mip-toggle")!;
+const loadFullDetailBtn = document.querySelector<HTMLButtonElement>("#load-full-detail")!;
+
 let currentDetail: SeriesDetail | null = null;
 let currentOrdinal = 0;
 let currentWindow: Window = { ...PRESETS.softTissue };
 let sliceCache = new Map<number, SliceData>();
 let inFlight = new Map<number, Promise<SliceData>>();
 const PREFETCH_RADIUS = 3;
+
+let mode: ViewMode = "slices";
+let loadedVolume: { seriesUid: string; level: number } | null = null;
+let volumeInFlight: Promise<VolumeData> | null = null;
+let currentTfPreset = "bone";
 
 function loadSlice(seriesUid: string, ordinal: number): Promise<SliceData> {
   const cached = sliceCache.get(ordinal);
@@ -67,6 +100,12 @@ function highlightActivePreset(name: string | null): void {
   });
 }
 
+function highlightActiveTfPreset(name: string | null): void {
+  tfPresetsContainer.querySelectorAll("button.preset").forEach((btn) => {
+    btn.classList.toggle("active", btn.getAttribute("data-tf-preset") === name);
+  });
+}
+
 async function showSlice(ordinal: number): Promise<void> {
   if (!currentDetail) return;
   currentOrdinal = ordinal;
@@ -92,8 +131,81 @@ function buildPresetButtons(): void {
       updateWindowLabel();
       view.setWindow(currentWindow);
       view.render();
+      volumeView.setWindow(currentWindow);
+      if (mode === "volume") volumeView.render();
     });
     presetsContainer.appendChild(btn);
+  }
+}
+
+function buildTfPresetButtons(): void {
+  tfPresetsContainer.innerHTML = "";
+  for (const name of Object.keys(TRANSFER_PRESETS)) {
+    const btn = document.createElement("button");
+    btn.className = "preset";
+    btn.type = "button";
+    btn.textContent = name;
+    btn.setAttribute("data-tf-preset", name);
+    btn.addEventListener("click", () => {
+      currentTfPreset = name;
+      applyTransferFunctionPreset();
+      highlightActiveTfPreset(name);
+    });
+    tfPresetsContainer.appendChild(btn);
+  }
+}
+
+function applyTransferFunctionPreset(): void {
+  const points = TRANSFER_PRESETS[currentTfPreset];
+  volumeView.setTransferFunction(buildTransferFunctionLUT(points));
+  if (mode === "volume") volumeView.render();
+}
+
+async function loadVolumeIfNeeded(seriesUid: string, level = 1): Promise<void> {
+  if (loadedVolume && loadedVolume.seriesUid === seriesUid && loadedVolume.level === level) {
+    return;
+  }
+  volumeLoading.style.display = "block";
+  try {
+    const data = volumeInFlight ?? fetchVolume(seriesUid, level);
+    volumeInFlight = data;
+    const volume = await data;
+    volumeInFlight = null;
+    volumeView.uploadVolume(
+      volume.voxels,
+      volume.dimX,
+      volume.dimY,
+      volume.dimZ,
+      volume.spacingX,
+      volume.spacingY,
+      volume.spacingZ
+    );
+    loadedVolume = { seriesUid, level: volume.level };
+    volumeUncalibratedNotice.style.display = volume.huCalibrated ? "none" : "block";
+    volumeInfoLabel.textContent = `level ${volume.level}  ·  ${volume.dimX}x${volume.dimY}x${volume.dimZ}`;
+    volumeView.render();
+  } finally {
+    volumeLoading.style.display = "none";
+  }
+}
+
+function setMode(next: ViewMode): void {
+  mode = next;
+  modeSlicesBtn.classList.toggle("active", mode === "slices");
+  modeVolumeBtn.classList.toggle("active", mode === "volume");
+  canvas.style.display = mode === "slices" ? "block" : "none";
+  volumeCanvas.style.display = mode === "volume" ? "block" : "none";
+  document.querySelector<HTMLDivElement>("#overlay")!.style.display =
+    mode === "slices" ? "flex" : "none";
+  volumeOverlay.style.display = mode === "volume" ? "flex" : "none";
+  volumeSection.style.display = mode === "volume" ? "block" : "none";
+  sliceHint.style.display = mode === "slices" ? "block" : "none";
+  volumeHint.style.display = mode === "volume" ? "block" : "none";
+
+  if (mode === "volume" && currentDetail) {
+    void loadVolumeIfNeeded(currentDetail.series_uid, loadedVolume?.level ?? 1).then(() => {
+      volumeView.render();
+    });
   }
 }
 
@@ -104,6 +216,8 @@ async function loadSeries(seriesUid: string): Promise<void> {
   currentOrdinal = 0;
   sliceCache = new Map();
   inFlight = new Map();
+  loadedVolume = null;
+  volumeInFlight = null;
 
   infoPatient.textContent = detail.patient_id ?? "—";
   infoModality.textContent = detail.modality ?? "—";
@@ -115,8 +229,14 @@ async function loadSeries(seriesUid: string): Promise<void> {
   currentWindow = { ...PRESETS.softTissue };
   highlightActivePreset(null);
   updateWindowLabel();
+  volumeView.setWindow(currentWindow);
 
   await showSlice(0);
+
+  if (mode === "volume") {
+    await loadVolumeIfNeeded(seriesUid, 1);
+    volumeView.render();
+  }
 }
 
 function wireInteractions(): void {
@@ -157,17 +277,103 @@ function wireInteractions(): void {
     updateWindowLabel();
     view.setWindow(currentWindow);
     view.render();
+    volumeView.setWindow(currentWindow);
   });
   window.addEventListener("mouseup", () => {
     dragging = false;
   });
 
-  window.addEventListener("resize", () => view.render());
+  window.addEventListener("resize", () => {
+    view.render();
+    if (mode === "volume") volumeView.render();
+  });
+
+  // Volume camera: left-drag orbits, wheel zooms. No roll; pitch is clamped
+  // inside VolumeView.orbit to avoid gimbal flip at the poles.
+  let orbiting = false;
+  let orbitLastX = 0;
+  let orbitLastY = 0;
+  volumeCanvas.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    orbiting = true;
+    orbitLastX = ev.clientX;
+    orbitLastY = ev.clientY;
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!orbiting) return;
+    const dx = ev.clientX - orbitLastX;
+    const dy = ev.clientY - orbitLastY;
+    orbitLastX = ev.clientX;
+    orbitLastY = ev.clientY;
+    volumeView.orbit(-dx * 0.008, dy * 0.008);
+    volumeView.render();
+  });
+  window.addEventListener("mouseup", () => {
+    orbiting = false;
+  });
+  volumeCanvas.addEventListener(
+    "wheel",
+    (ev) => {
+      ev.preventDefault();
+      const factor = ev.deltaY > 0 ? 1.1 : 1 / 1.1;
+      volumeView.zoom(factor);
+      volumeView.render();
+    },
+    { passive: false }
+  );
+
+  modeSlicesBtn.addEventListener("click", () => setMode("slices"));
+  modeVolumeBtn.addEventListener("click", () => setMode("volume"));
+
+  qualitySlider.addEventListener("input", () => {
+    const steps = Number(qualitySlider.value);
+    volumeView.setSteps(steps);
+    qualityLabel.textContent = String(steps);
+    if (mode === "volume") volumeView.render();
+  });
+
+  opacitySlider.addEventListener("input", () => {
+    const scale = Number(opacitySlider.value) / 100;
+    volumeView.setOpacityScale(scale);
+    opacityLabel.textContent = scale.toFixed(2);
+    if (mode === "volume") volumeView.render();
+  });
+
+  thresholdSlider.addEventListener("input", () => {
+    const hu = Number(thresholdSlider.value);
+    volumeView.setThresholdHU(hu);
+    thresholdLabel.textContent = `${hu} HU`;
+    if (mode === "volume") volumeView.render();
+  });
+
+  mipToggle.addEventListener("change", () => {
+    volumeView.setMipMode(mipToggle.checked);
+    if (mode === "volume") volumeView.render();
+  });
+
+  loadFullDetailBtn.addEventListener("click", () => {
+    if (!currentDetail) return;
+    void loadVolumeIfNeeded(currentDetail.series_uid, 0).then(() => volumeView.render());
+  });
+}
+
+function initVolumeControls(): void {
+  buildTfPresetButtons();
+  highlightActiveTfPreset(currentTfPreset);
+  applyTransferFunctionPreset();
+  volumeView.setSteps(Number(qualitySlider.value));
+  qualityLabel.textContent = qualitySlider.value;
+  volumeView.setOpacityScale(Number(opacitySlider.value) / 100);
+  opacityLabel.textContent = (Number(opacitySlider.value) / 100).toFixed(2);
+  volumeView.setThresholdHU(Number(thresholdSlider.value));
+  thresholdLabel.textContent = `${thresholdSlider.value} HU`;
 }
 
 async function init(): Promise<void> {
   buildPresetButtons();
+  initVolumeControls();
   wireInteractions();
+  setMode("slices");
 
   let list: SeriesSummary[] = [];
   try {

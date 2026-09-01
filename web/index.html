@@ -191,6 +191,100 @@
         color: var(--text-dimmer);
         margin: auto;
       }
+
+      .mode-toggle {
+        display: flex;
+        gap: 6px;
+        margin-left: auto;
+      }
+
+      .mode-toggle button.preset {
+        padding: 4px 12px;
+      }
+
+      #gl-canvas-volume {
+        width: 100%;
+        height: 100%;
+        display: block;
+        cursor: grab;
+      }
+
+      #gl-canvas-volume:active {
+        cursor: grabbing;
+      }
+
+      #volume-overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #volume-overlay .row {
+        display: flex;
+        justify-content: space-between;
+        color: #cfe3ef;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #volume-uncalibrated-notice {
+        display: none;
+        background: var(--warn-bg);
+        border: 1px solid var(--warn-border);
+        color: var(--warn-text);
+        padding: 4px 10px;
+        font-size: 12px;
+        border-radius: 4px;
+        align-self: flex-start;
+        pointer-events: auto;
+      }
+
+      #volume-loading {
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        color: var(--text);
+        padding: 4px 10px;
+        font-size: 12px;
+        border-radius: 4px;
+        align-self: flex-start;
+        margin-top: 6px;
+      }
+
+      .slider-row {
+        margin-bottom: 14px;
+        font-size: 12px;
+      }
+
+      .slider-row label {
+        display: flex;
+        justify-content: space-between;
+        color: var(--text-dim);
+        margin-bottom: 4px;
+      }
+
+      .slider-row input[type="range"] {
+        width: 100%;
+        accent-color: var(--accent);
+      }
+
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--text-dim);
+        margin-bottom: 14px;
+        cursor: pointer;
+      }
+
+      button.preset.full-width {
+        width: 100%;
+        margin-bottom: 20px;
+      }
     </style>
   </head>
   <body>
@@ -199,10 +293,15 @@
       <select id="series-select">
         <option value="">Loading series…</option>
       </select>
+      <div class="mode-toggle">
+        <button type="button" class="preset" id="mode-slices">Slices</button>
+        <button type="button" class="preset" id="mode-volume">Volume</button>
+      </div>
     </header>
     <main>
       <div id="viewport">
         <canvas id="gl-canvas"></canvas>
+        <canvas id="gl-canvas-volume" style="display: none"></canvas>
         <div id="overlay">
           <div id="uncalibrated-notice">
             Uncalibrated pixel data &mdash; values are NOT Hounsfield Units
@@ -210,6 +309,16 @@
           <div class="row">
             <span id="slice-label">&mdash;</span>
             <span id="window-label">&mdash;</span>
+          </div>
+        </div>
+        <div id="volume-overlay" style="display: none">
+          <div id="volume-uncalibrated-notice">
+            Uncalibrated pixel data &mdash; values are NOT Hounsfield Units
+          </div>
+          <div id="volume-loading" style="display: none">Loading volume&hellip;</div>
+          <div class="row">
+            <span id="volume-info-label">&mdash;</span>
+            <span></span>
           </div>
         </div>
         <div id="empty-state">Select a series to begin</div>
@@ -228,11 +337,38 @@
         </dl>
         <h2>Window presets</h2>
         <div class="presets" id="presets"></div>
+        <div id="volume-section" style="display: none">
+          <h2>Transfer function</h2>
+          <div class="presets" id="tf-presets"></div>
+          <div class="slider-row">
+            <label for="opacity-slider">Opacity <span id="opacity-label">1.00</span></label>
+            <input type="range" id="opacity-slider" min="0" max="300" value="100" />
+          </div>
+          <div class="slider-row">
+            <label for="threshold-slider">Threshold <span id="threshold-label">-1024 HU</span></label>
+            <input type="range" id="threshold-slider" min="-1024" max="3071" value="-1024" />
+          </div>
+          <div class="slider-row">
+            <label for="quality-slider">Quality (steps) <span id="quality-label">256</span></label>
+            <input type="range" id="quality-slider" min="32" max="512" value="256" />
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="mip-toggle" />
+            MIP mode (max intensity projection)
+          </label>
+          <button type="button" class="preset full-width" id="load-full-detail">
+            Load full detail (level 0)
+          </button>
+        </div>
         <h2>Controls</h2>
-        <p class="hint">
+        <p class="hint" id="slice-hint">
           Scroll to change slice.<br />
           Drag with the left button: horizontal adjusts window centre,
           vertical adjusts window width.
+        </p>
+        <p class="hint" id="volume-hint" style="display: none">
+          Drag with the left button to orbit.<br />
+          Scroll to zoom.
         </p>
       </aside>
     </main>

@@ -38,6 +38,60 @@ export async function fetchSeriesDetail(seriesUid: string): Promise<SeriesDetail
   return res.json();
 }
 
+export interface VolumeData {
+  dimX: number;
+  dimY: number;
+  dimZ: number;
+  spacingX: number;
+  spacingY: number;
+  spacingZ: number;
+  huCalibrated: boolean;
+  level: number;
+  huMin: number;
+  huMax: number;
+  voxels: Int16Array;
+}
+
+export async function fetchVolume(seriesUid: string, level = 1): Promise<VolumeData> {
+  const res = await fetch(
+    `/api/series/${encodeURIComponent(seriesUid)}/volume?level=${level}`
+  );
+  if (!res.ok) {
+    throw new Error(`GET /api/series/${seriesUid}/volume?level=${level} failed: ${res.status}`);
+  }
+  const dimX = Number(res.headers.get("X-Strata-Dim-X"));
+  const dimY = Number(res.headers.get("X-Strata-Dim-Y"));
+  const dimZ = Number(res.headers.get("X-Strata-Dim-Z"));
+  const spacingX = Number(res.headers.get("X-Strata-Spacing-X"));
+  const spacingY = Number(res.headers.get("X-Strata-Spacing-Y"));
+  const spacingZ = Number(res.headers.get("X-Strata-Spacing-Z"));
+  const huCalibrated = res.headers.get("X-Strata-HU-Calibrated") === "true";
+  const respLevel = Number(res.headers.get("X-Strata-Level"));
+  const huMin = Number(res.headers.get("X-Strata-HU-Min"));
+  const huMax = Number(res.headers.get("X-Strata-HU-Max"));
+  const buf = await res.arrayBuffer();
+  // Same wire format as slices: raw little-endian i16, but volume-ordered
+  // x fastest, then y, then z (exactly what texImage3D wants).
+  const view = new DataView(buf);
+  const voxels = new Int16Array(dimX * dimY * dimZ);
+  for (let i = 0; i < voxels.length; i++) {
+    voxels[i] = view.getInt16(i * 2, true);
+  }
+  return {
+    dimX,
+    dimY,
+    dimZ,
+    spacingX,
+    spacingY,
+    spacingZ,
+    huCalibrated,
+    level: respLevel,
+    huMin,
+    huMax,
+    voxels,
+  };
+}
+
 export async function fetchSlice(seriesUid: string, ordinal: number): Promise<SliceData> {
   const res = await fetch(
     `/api/series/${encodeURIComponent(seriesUid)}/slices/${ordinal}`
