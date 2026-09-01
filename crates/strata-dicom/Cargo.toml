@@ -8,3 +8,7 @@ dicom.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+dicom.workspace = true
+tempfile = "3"
