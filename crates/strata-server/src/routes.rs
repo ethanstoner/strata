@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tower_http::services::ServeDir;
 
-use crate::disk_cache::DiskCache;
+use crate::disk_cache::{DiskCache, DEFAULT_MAX_CACHE_BYTES};
 use crate::index::Index;
 use crate::pixels::decode_slice;
 use crate::volume::{self, VolumeCache};
@@ -49,12 +49,19 @@ impl FromRef<AppState> for Arc<DiskCache> {
 
 static ANON_CACHE_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Builds the API router with a disk-backed volume cache under `cache_dir`.
-/// This is what `main.rs` uses in production, with `cache_dir` derived from
-/// `--cache-dir` or defaulting next to the SQLite index.
-pub fn build_router_with_cache_dir(index: SharedIndex, cache_dir: PathBuf) -> Router {
-    let disk_cache =
-        Arc::new(DiskCache::new(cache_dir).expect("failed to create volume disk cache directory"));
+/// Builds the API router with a disk-backed volume cache under `cache_dir`,
+/// bounded to `max_cache_bytes` total. This is what `main.rs` uses in
+/// production, with `cache_dir` derived from `--cache-dir` or defaulting
+/// next to the SQLite index, and `max_cache_bytes` from `--max-cache-bytes`.
+pub fn build_router_with_cache_dir(
+    index: SharedIndex,
+    cache_dir: PathBuf,
+    max_cache_bytes: u64,
+) -> Router {
+    let disk_cache = Arc::new(
+        DiskCache::new(cache_dir, max_cache_bytes)
+            .expect("failed to create volume disk cache directory"),
+    );
     let state = AppState {
         index,
         volume_cache: Arc::new(VolumeCache::new()),
@@ -70,19 +77,20 @@ pub fn build_router_with_cache_dir(index: SharedIndex, cache_dir: PathBuf) -> Ro
 }
 
 /// Builds the API router with a private, process-unique temp directory as
-/// its disk cache. Existing callers (tests, mainly) that don't care about
-/// cache placement keep working unchanged; each call gets its own
-/// directory so parallel test runs can't collide on the same cache files.
+/// its disk cache, at the default cache budget. Existing callers (tests,
+/// mainly) that don't care about cache placement keep working unchanged;
+/// each call gets its own directory so parallel test runs can't collide on
+/// the same cache files.
 pub fn build_router(index: SharedIndex) -> Router {
     let n = ANON_CACHE_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("strata-cache-{}-{n}", std::process::id()));
-    build_router_with_cache_dir(index, dir)
+    build_router_with_cache_dir(index, dir, DEFAULT_MAX_CACHE_BYTES)
 }
 
 /// Adds static file serving from `dist_dir` at `/`, with the API routes
 /// taking precedence via fallback.
 pub fn with_static_files(router: Router, dist_dir: &Path) -> Router {
-    router.fallback_service(ServeDir::new(dist_dir.to_path_buf()))
+    router.fallback_service(ServeDir::new(dist_dir))
 }
 
 /// Any index/database failure becomes a 500; unknown-resource cases are
@@ -101,9 +109,20 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
     }
 }
 
-async fn health(State(index): State<SharedIndex>) -> Result<Json<serde_json::Value>, AppError> {
+async fn health(
+    State(index): State<SharedIndex>,
+    State(disk_cache): State<Arc<DiskCache>>,
+) -> Result<Json<serde_json::Value>, AppError> {
     let count = index.lock().unwrap().series_count()?;
-    Ok(Json(serde_json::json!({ "status": "ok", "series": count })))
+    let cache_bytes = disk_cache.total_bytes()?;
+    let cache_entries = disk_cache.entry_count()?;
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "series": count,
+        "cache_bytes": cache_bytes,
+        "cache_entries": cache_entries,
+        "cache_max_bytes": disk_cache.max_bytes(),
+    })))
 }
 
 async fn list_series(
@@ -190,8 +209,12 @@ async fn get_volume(
     // Reject before touching disk: an absurd level on a large series
     // shouldn't cost a single decode.
     let factor = 1u32 << level;
-    let (out_x, out_y, out_z) =
-        volume::output_dims(detail.cols as u32, detail.rows as u32, detail.slice_count, factor);
+    let (out_x, out_y, out_z) = volume::output_dims(
+        detail.cols as u32,
+        detail.rows as u32,
+        detail.slice_count,
+        factor,
+    );
     if volume::output_bytes(out_x, out_y, out_z) > volume::MAX_OUTPUT_BYTES {
         return Ok((
             StatusCode::BAD_REQUEST,

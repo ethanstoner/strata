@@ -1,4 +1,4 @@
-use strata_dicom::geometry::{slice_normal, slice_depth};
+use strata_dicom::geometry::{slice_depth, slice_normal};
 
 // A standard axial acquisition: rows run +x, columns run +y.
 const AXIAL: [f64; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];

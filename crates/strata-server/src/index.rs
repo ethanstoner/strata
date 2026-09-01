@@ -313,8 +313,8 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use strata_dicom::meta::SliceMeta;
     use std::path::PathBuf;
+    use strata_dicom::meta::SliceMeta;
 
     /// Builds a manifest by hand rather than importing strata-dicom's test
     /// fixture builder, which lives under that crate's own tests/ and isn't
@@ -331,7 +331,11 @@ mod tests {
             cols: 512,
             position: [0.0, 0.0, depth],
             orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            rescale: if hu_calibrated { Some((1.0, -1024.0)) } else { None },
+            rescale: if hu_calibrated {
+                Some((1.0, -1024.0))
+            } else {
+                None
+            },
             pixel_spacing: Some((0.7, 0.7)),
             slice_thickness: Some(5.0),
             depth,

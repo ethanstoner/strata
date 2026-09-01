@@ -64,7 +64,7 @@ static SOP_COUNTER: AtomicU32 = AtomicU32::new(0);
 /// Pad a string to even byte length, as DICOM VRs require. `\0` is the
 /// standard pad for UI; other string VRs pad with a space.
 fn pad_even(mut s: String, pad: char) -> String {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         s.push(pad);
     }
     s
@@ -107,7 +107,12 @@ pub fn write_slice(dir: &Path, s: &FixtureSlice) -> PathBuf {
     let omit = |name: &str| s.omit_tag == Some(name);
 
     if !omit("PatientID") {
-        put(&mut obj, tags::PATIENT_ID, VR::LO, text_value(&s.patient_id));
+        put(
+            &mut obj,
+            tags::PATIENT_ID,
+            VR::LO,
+            text_value(&s.patient_id),
+        );
     }
     if !omit("StudyInstanceUID") {
         put(
@@ -142,12 +147,22 @@ pub fn write_slice(dir: &Path, s: &FixtureSlice) -> PathBuf {
     if !omit("Modality") {
         put(&mut obj, tags::MODALITY, VR::CS, text_value("CT"));
     }
-    put(&mut obj, tags::INSTANCE_NUMBER, VR::IS, is(s.instance_number));
+    put(
+        &mut obj,
+        tags::INSTANCE_NUMBER,
+        VR::IS,
+        is(s.instance_number),
+    );
     if !omit("Rows") {
         put(&mut obj, tags::ROWS, VR::US, PrimitiveValue::from(s.rows));
     }
     if !omit("Columns") {
-        put(&mut obj, tags::COLUMNS, VR::US, PrimitiveValue::from(s.cols));
+        put(
+            &mut obj,
+            tags::COLUMNS,
+            VR::US,
+            PrimitiveValue::from(s.cols),
+        );
     }
     if !omit("ImagePositionPatient") {
         put(

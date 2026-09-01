@@ -186,6 +186,63 @@ async fn health_reports_series_count() {
 }
 
 #[tokio::test]
+async fn health_reports_cache_size() {
+    // Populate the disk cache directly (no real DICOM files needed) so
+    // `build_router_with_cache_dir` picks it up as pre-existing state,
+    // rather than routing a real volume request through pixel decoding.
+    let dir = tempfile::tempdir().unwrap();
+    let disk_cache = strata_server::disk_cache::DiskCache::new(
+        dir.path().to_path_buf(),
+        strata_server::disk_cache::DEFAULT_MAX_CACHE_BYTES,
+    )
+    .unwrap();
+    let vol = strata_server::volume::Volume {
+        dim_x: 2,
+        dim_y: 2,
+        dim_z: 2,
+        spacing_x: 1.0,
+        spacing_y: 1.0,
+        spacing_z: 1.0,
+        hu_calibrated: true,
+        data: vec![0i16; 8],
+    };
+    disk_cache
+        .put("SERIES1", 1, &vol, 8, std::time::SystemTime::now())
+        .unwrap();
+    drop(disk_cache);
+
+    let index = Index::open_in_memory().unwrap();
+    index.insert_series(&make_manifest(true)).unwrap();
+    let app = strata_server::routes::build_router_with_cache_dir(
+        Arc::new(Mutex::new(index)),
+        dir.path().to_path_buf(),
+        strata_server::disk_cache::DEFAULT_MAX_CACHE_BYTES,
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["cache_entries"], 1);
+    assert!(
+        json["cache_bytes"].as_u64().unwrap() > 0,
+        "cache_bytes must reflect the entry just written"
+    );
+    assert_eq!(
+        json["cache_max_bytes"],
+        strata_server::disk_cache::DEFAULT_MAX_CACHE_BYTES
+    );
+}
+
+#[tokio::test]
 async fn hu_calibrated_false_is_preserved_through_the_api() {
     let app = app_with(&[make_manifest(false)]);
 

@@ -105,7 +105,7 @@ fn spacing_stats(slices: &[SliceMeta]) -> (Option<f64>, bool) {
             .expect("deltas of finite depths are always finite")
     });
     let mid = sorted.len() / 2;
-    let median = if sorted.len() % 2 == 0 {
+    let median = if sorted.len().is_multiple_of(2) {
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
         sorted[mid]

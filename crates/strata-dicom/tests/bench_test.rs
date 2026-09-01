@@ -34,6 +34,15 @@ fn bench_index_directory() {
 
     let median = times[times.len() / 2];
     println!("INDEX slices={slices} runs={runs}");
-    println!("  median={:.1}ms  min={:.1}ms  max={:.1}ms", median, times[0], times[times.len() - 1]);
-    println!("  per_slice={:.3}ms  rate={:.0} slices/sec", median / slices as f64, slices as f64 / (median / 1000.0));
+    println!(
+        "  median={:.1}ms  min={:.1}ms  max={:.1}ms",
+        median,
+        times[0],
+        times[times.len() - 1]
+    );
+    println!(
+        "  per_slice={:.3}ms  rate={:.0} slices/sec",
+        median / slices as f64,
+        slices as f64 / (median / 1000.0)
+    );
 }

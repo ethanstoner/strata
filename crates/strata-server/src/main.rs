@@ -26,6 +26,11 @@ struct Cli {
     /// `strata-cache` folder next to `--index`.
     #[arg(long)]
     cache_dir: Option<PathBuf>,
+
+    /// Total byte budget for the on-disk pyramid cache. Least-recently
+    /// -written entries are evicted first once a write would exceed it.
+    #[arg(long, default_value_t = strata_server::disk_cache::DEFAULT_MAX_CACHE_BYTES)]
+    max_cache_bytes: u64,
 }
 
 #[tokio::main]
@@ -57,10 +62,14 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|| Path::new("."))
             .join("strata-cache")
     });
-    println!("volume disk cache: {}", cache_dir.display());
+    println!(
+        "volume disk cache: {} (max {} bytes)",
+        cache_dir.display(),
+        cli.max_cache_bytes
+    );
 
     let shared: strata_server::routes::SharedIndex = Arc::new(Mutex::new(index));
-    let mut router = build_router_with_cache_dir(shared, cache_dir);
+    let mut router = build_router_with_cache_dir(shared, cache_dir, cli.max_cache_bytes);
 
     let dist_dir = PathBuf::from("web/dist");
     if dist_dir.exists() {

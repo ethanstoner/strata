@@ -8,12 +8,24 @@
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, ErrorKind, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::volume::Volume;
 
 const MAGIC: [u8; 4] = *b"SVC1";
+
+/// Default `--max-cache-bytes`. 2 GiB comfortably fits several large
+/// studies' *servable* pyramids (level 0 is never persisted, so a study
+/// like `data/big`, 1026 slices, only costs ~65 MB: levels 1-3) while still
+/// bounding disk use for a self-hosted tool pointed at a folder of many
+/// studies, rather than growing without limit.
+pub const DEFAULT_MAX_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// The on-disk filename suffix for a cache entry, used both to build paths
+/// and to filter directory listings down to entries (as opposed to the
+/// `.tmp-<pid>` files `put` briefly creates mid-write).
+const ENTRY_SUFFIX: &str = ".svc";
 
 /// Fixed byte layout, in field order: magic, dims, spacing, hu_calibrated,
 /// hu_min/max, source_slice_count, source_mtime (secs+nanos), data_len.
@@ -90,15 +102,102 @@ fn decode_header(buf: &[u8]) -> Option<Header> {
 }
 
 /// Persists assembled pyramid levels next to the SQLite index (or wherever
-/// `--cache-dir` points), keyed on `(series_uid, level)`.
+/// `--cache-dir` points), keyed on `(series_uid, level)`, bounded to
+/// `max_bytes` total by evicting least-recently-written entries.
 pub struct DiskCache {
     dir: PathBuf,
+    max_bytes: u64,
+}
+
+/// One `.svc` file's path, size, and mtime — everything eviction needs to
+/// pick a victim without a separate index.
+struct Entry {
+    path: PathBuf,
+    bytes: u64,
+    mtime: SystemTime,
 }
 
 impl DiskCache {
-    pub fn new(dir: PathBuf) -> io::Result<Self> {
+    pub fn new(dir: PathBuf, max_bytes: u64) -> io::Result<Self> {
         fs::create_dir_all(&dir)?;
-        Ok(DiskCache { dir })
+        Ok(DiskCache { dir, max_bytes })
+    }
+
+    /// Lists cache entries by scanning the directory fresh each time rather
+    /// than maintaining an index — this cache is checked at most once per
+    /// write, not on the hot read path, so the scan cost is fine.
+    fn entries(&self) -> io::Result<Vec<Entry>> {
+        let mut out = Vec::new();
+        for dirent in fs::read_dir(&self.dir)? {
+            let dirent = dirent?;
+            let path = dirent.path();
+            let is_entry = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(ENTRY_SUFFIX));
+            if !is_entry {
+                continue; // skip .tmp-<pid> write-in-progress files and anything foreign
+            }
+            let meta = dirent.metadata()?;
+            if !meta.is_file() {
+                continue;
+            }
+            out.push(Entry {
+                path,
+                bytes: meta.len(),
+                mtime: meta.modified()?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Total bytes currently occupied by cache entries, for `/api/health`.
+    pub fn total_bytes(&self) -> io::Result<u64> {
+        Ok(self.entries()?.iter().map(|e| e.bytes).sum())
+    }
+
+    /// Number of cache entries currently on disk, for `/api/health`.
+    pub fn entry_count(&self) -> io::Result<usize> {
+        Ok(self.entries()?.len())
+    }
+
+    /// The configured `--max-cache-bytes` budget, for `/api/health`.
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
+    /// Evicts least-recently-written entries (oldest mtime first) until
+    /// `incoming_bytes` more would fit under `max_bytes`, or there is
+    /// nothing left to evict. `keep` is excluded from eviction candidates:
+    /// it is the entry about to be written and, on a replace, its old file
+    /// is already accounted for by being overwritten via rename rather than
+    /// needing to be evicted first.
+    ///
+    /// A file that fails to delete (e.g. still open for reading — on
+    /// Windows an open handle blocks `DeleteFile` outright, which is the
+    /// conservative behaviour we want) is logged and left in place rather
+    /// than retried or treated as an error: a reader must never have its
+    /// file pulled out from under it, so staying briefly over budget is
+    /// preferred over forcing the delete.
+    fn make_room_for(&self, incoming_bytes: u64, keep: &Path) -> io::Result<()> {
+        let mut entries = self.entries()?;
+        entries.retain(|e| e.path != keep);
+        entries.sort_by_key(|e| e.mtime);
+
+        let mut total: u64 = entries.iter().map(|e| e.bytes).sum();
+        for entry in &entries {
+            if total + incoming_bytes <= self.max_bytes {
+                break;
+            }
+            match fs::remove_file(&entry.path) {
+                Ok(()) => total -= entry.bytes,
+                Err(e) => eprintln!(
+                    "disk cache: could not evict {} to make room ({e}); leaving it in place",
+                    entry.path.display()
+                ),
+            }
+        }
+        Ok(())
     }
 
     fn path_for(&self, series_uid: &str, level: u32) -> PathBuf {
@@ -106,7 +205,13 @@ impl DiskCache {
         // but sanitise defensively rather than trust an external format.
         let safe: String = series_uid
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         self.dir.join(format!("{safe}.L{level}.svc"))
     }
@@ -126,9 +231,7 @@ impl DiskCache {
         match self.try_get(series_uid, level, expected_slice_count, expected_mtime) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!(
-                    "disk cache: treating {series_uid} level {level} as a miss ({e})"
-                );
+                eprintln!("disk cache: treating {series_uid} level {level} as a miss ({e})");
                 None
             }
         }
@@ -165,7 +268,9 @@ impl DiskCache {
         }
 
         let expected_mtime_parts = mtime_to_parts(expected_mtime);
-        if header.source_slice_count != expected_slice_count || header.source_mtime != expected_mtime_parts {
+        if header.source_slice_count != expected_slice_count
+            || header.source_mtime != expected_mtime_parts
+        {
             return Ok(None); // source changed since this entry was written — stale
         }
 
@@ -179,8 +284,10 @@ impl DiskCache {
         let mut raw = vec![0u8; (header.data_len * 2) as usize];
         file.read_exact(&mut raw)?;
         let data: Vec<i16> = raw
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
             .collect();
 
         Ok(Some(Volume {
@@ -238,6 +345,22 @@ impl DiskCache {
             w.flush()?;
         }
 
+        let incoming_bytes = fs::metadata(&tmp_path)?.len();
+        if incoming_bytes > self.max_bytes {
+            // No amount of evicting other entries makes room for this one;
+            // writing it anyway would either blow the budget outright or
+            // immediately evict everything else in the cache for a single
+            // entry. Skip persisting — the caller still gets its volume
+            // from this call, just without a disk-cache speedup next time.
+            eprintln!(
+                "disk cache: not persisting {series_uid} level {level} ({incoming_bytes} bytes exceeds the {}-byte cache budget)",
+                self.max_bytes
+            );
+            fs::remove_file(&tmp_path)?;
+            return Ok(());
+        }
+
+        self.make_room_for(incoming_bytes, &path)?;
         fs::rename(&tmp_path, &path)?;
         Ok(())
     }
@@ -263,8 +386,12 @@ mod tests {
     }
 
     fn cache_in_tempdir() -> (tempfile::TempDir, DiskCache) {
+        cache_in_tempdir_with_budget(DEFAULT_MAX_CACHE_BYTES)
+    }
+
+    fn cache_in_tempdir_with_budget(max_bytes: u64) -> (tempfile::TempDir, DiskCache) {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf()).unwrap();
+        let cache = DiskCache::new(dir.path().to_path_buf(), max_bytes).unwrap();
         (dir, cache)
     }
 
@@ -275,7 +402,9 @@ mod tests {
         let mtime = SystemTime::now();
 
         cache.put("SERIES1", 1, &vol, 8, mtime).unwrap();
-        let got = cache.get("SERIES1", 1, 8, mtime).expect("must hit after put");
+        let got = cache
+            .get("SERIES1", 1, 8, mtime)
+            .expect("must hit after put");
 
         assert_eq!(got.dim_x, vol.dim_x);
         assert_eq!(got.dim_y, vol.dim_y);
@@ -332,5 +461,81 @@ mod tests {
         fs::write(&path, &full).unwrap();
 
         assert!(cache.get("SERIES1", 0, 8, mtime).is_none());
+    }
+
+    #[test]
+    fn cache_evicts_least_recently_used_when_over_budget() {
+        let vol = sample_volume();
+        let entry_bytes = HEADER_LEN as u64 + vol.data.len() as u64 * 2;
+        // Room for exactly two entries; a third must evict the oldest.
+        let (_dir, cache) = cache_in_tempdir_with_budget(entry_bytes * 2);
+        let mtime = SystemTime::now();
+
+        cache.put("A", 0, &vol, 8, mtime).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        cache.put("B", 0, &vol, 8, mtime).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        cache.put("C", 0, &vol, 8, mtime).unwrap();
+
+        assert!(
+            cache.get("A", 0, 8, mtime).is_none(),
+            "oldest entry (A) must be evicted to make room for C"
+        );
+        assert!(
+            cache.get("B", 0, 8, mtime).is_some(),
+            "B is newer than A and must survive"
+        );
+        assert!(
+            cache.get("C", 0, 8, mtime).is_some(),
+            "just-written entry C must survive"
+        );
+        assert_eq!(cache.entry_count().unwrap(), 2);
+        assert!(cache.total_bytes().unwrap() <= entry_bytes * 2);
+    }
+
+    #[test]
+    fn eviction_never_touches_the_entry_being_written() {
+        // Re-putting the same key (a re-scan overwriting a series' own
+        // cached level) must not evict itself trying to make room for
+        // itself — `keep` in `make_room_for` exists for exactly this.
+        let vol = sample_volume();
+        let entry_bytes = HEADER_LEN as u64 + vol.data.len() as u64 * 2;
+        let (_dir, cache) = cache_in_tempdir_with_budget(entry_bytes);
+        let mtime = SystemTime::now();
+
+        cache.put("SERIES1", 0, &vol, 8, mtime).unwrap();
+        cache.put("SERIES1", 0, &vol, 8, mtime).unwrap();
+
+        assert!(cache.get("SERIES1", 0, 8, mtime).is_some());
+        assert_eq!(cache.entry_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn total_bytes_and_entry_count_reflect_disk_state() {
+        let (_dir, cache) = cache_in_tempdir();
+        assert_eq!(cache.entry_count().unwrap(), 0);
+        assert_eq!(cache.total_bytes().unwrap(), 0);
+
+        let vol = sample_volume();
+        let mtime = SystemTime::now();
+        cache.put("SERIES1", 0, &vol, 8, mtime).unwrap();
+        cache.put("SERIES1", 1, &vol, 8, mtime).unwrap();
+
+        assert_eq!(cache.entry_count().unwrap(), 2);
+        let entry_bytes = HEADER_LEN as u64 + vol.data.len() as u64 * 2;
+        assert_eq!(cache.total_bytes().unwrap(), entry_bytes * 2);
+    }
+
+    #[test]
+    fn an_entry_larger_than_the_whole_budget_is_not_written() {
+        let vol = sample_volume();
+        let entry_bytes = HEADER_LEN as u64 + vol.data.len() as u64 * 2;
+        let (_dir, cache) = cache_in_tempdir_with_budget(entry_bytes - 1);
+        let mtime = SystemTime::now();
+
+        cache.put("SERIES1", 0, &vol, 8, mtime).unwrap();
+
+        assert!(cache.get("SERIES1", 0, 8, mtime).is_none());
+        assert_eq!(cache.entry_count().unwrap(), 0);
     }
 }

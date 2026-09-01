@@ -17,7 +17,7 @@ const TRANSFER_SYNTAX_EXPLICIT_VR_LE: &str = "1.2.840.10008.1.2.1";
 const SOP_CLASS_CT_IMAGE_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.2";
 
 fn pad_even(mut s: String, pad: char) -> String {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         s.push(pad);
     }
     s
@@ -47,7 +47,13 @@ fn put(obj: &mut InMemDicomObject, tag: Tag, vr: VR, value: PrimitiveValue) {
 /// Writes a minimal, valid, single-frame CT slice with `pixels` as the raw
 /// stored (unsigned 16-bit) sample values. `rescale = None` genuinely omits
 /// RescaleSlope/RescaleIntercept rather than writing an identity default.
-fn write_slice(dir: &Path, rows: u16, cols: u16, pixels: &[u16], rescale: Option<(f64, f64)>) -> PathBuf {
+fn write_slice(
+    dir: &Path,
+    rows: u16,
+    cols: u16,
+    pixels: &[u16],
+    rescale: Option<(f64, f64)>,
+) -> PathBuf {
     let mut obj = InMemDicomObject::new_empty();
 
     put(
@@ -110,7 +116,12 @@ fn write_slice(dir: &Path, rows: u16, cols: u16, pixels: &[u16], rescale: Option
         VR::US,
         PrimitiveValue::from(16u16),
     );
-    put(&mut obj, tags::HIGH_BIT, VR::US, PrimitiveValue::from(15u16));
+    put(
+        &mut obj,
+        tags::HIGH_BIT,
+        VR::US,
+        PrimitiveValue::from(15u16),
+    );
     put(
         &mut obj,
         tags::PIXEL_REPRESENTATION,
@@ -193,7 +204,10 @@ fn sample_dir() -> PathBuf {
 #[ignore]
 fn real_slice_decodes_to_plausible_hu() {
     let dir = sample_dir();
-    assert!(dir.exists(), "data/sample missing; fetch a TCIA series first");
+    assert!(
+        dir.exists(),
+        "data/sample missing; fetch a TCIA series first"
+    );
 
     let result = strata_dicom::scan::scan_directory(&dir).expect("scan must succeed");
     let series = result
@@ -205,12 +219,24 @@ fn real_slice_decodes_to_plausible_hu() {
     let path = &series.slices[0].path;
     let decoded = decode_slice(path).expect("real slice must decode");
 
-    assert_eq!(decoded.data.len(), decoded.rows as usize * decoded.cols as usize);
+    assert_eq!(
+        decoded.data.len(),
+        decoded.rows as usize * decoded.cols as usize
+    );
 
     let min = *decoded.data.iter().min().unwrap();
     let max = *decoded.data.iter().max().unwrap();
-    println!("min={min} max={max} hu_calibrated={}", decoded.hu_calibrated);
+    println!(
+        "min={min} max={max} hu_calibrated={}",
+        decoded.hu_calibrated
+    );
 
-    assert!(min < -900, "expected air outside the patient, got min={min}");
-    assert!(max > 100, "expected bone/contrast in a chest CT, got max={max}");
+    assert!(
+        min < -900,
+        "expected air outside the patient, got min={min}"
+    );
+    assert!(
+        max > 100,
+        "expected bone/contrast in a chest CT, got max={max}"
+    );
 }

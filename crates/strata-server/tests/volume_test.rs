@@ -131,8 +131,7 @@ fn downsample_handles_odd_dimensions() {
             for nx in 0..3u32 {
                 let actual = out[(nz * 9 + ny * 3 + nx) as usize];
                 assert_eq!(
-                    actual,
-                    expected_x[nx as usize],
+                    actual, expected_x[nx as usize],
                     "mismatch at ({nx},{ny},{nz})"
                 );
             }
@@ -236,7 +235,10 @@ fn header_u32(headers: &axum::http::HeaderMap, name: &str) -> u32 {
 #[ignore]
 async fn real_volume_has_expected_shape() {
     let dir = sample_dir();
-    assert!(dir.exists(), "data/sample missing; fetch a TCIA series first");
+    assert!(
+        dir.exists(),
+        "data/sample missing; fetch a TCIA series first"
+    );
 
     let scan = strata_dicom::scan::scan_directory(&dir).expect("scan must succeed");
     let series = scan
@@ -315,7 +317,10 @@ fn big_dir() -> PathBuf {
 #[ignore]
 async fn parallel_decode_matches_sequential() {
     let dir = sample_dir();
-    assert!(dir.exists(), "data/sample missing; fetch a TCIA series first");
+    assert!(
+        dir.exists(),
+        "data/sample missing; fetch a TCIA series first"
+    );
 
     let scan = strata_dicom::scan::scan_directory(&dir).expect("scan must succeed");
     let series = scan
@@ -327,8 +332,7 @@ async fn parallel_decode_matches_sequential() {
 
     let mut sequential = Vec::new();
     for slice in &series.slices {
-        let decoded =
-            strata_server::pixels::decode_slice(&slice.path).expect("slice must decode");
+        let decoded = strata_server::pixels::decode_slice(&slice.path).expect("slice must decode");
         sequential.extend_from_slice(&decoded.data);
     }
 
@@ -350,8 +354,10 @@ async fn parallel_decode_matches_sequential() {
         .await
         .unwrap();
     let parallel: Vec<i16> = body
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b))
         .collect();
 
     assert_eq!(parallel.len(), sequential.len());
@@ -372,7 +378,10 @@ async fn parallel_decode_matches_sequential() {
 #[ignore]
 fn level2_cascade_error_vs_direct_from_level0() {
     let dir = big_dir();
-    assert!(dir.exists(), "data/big missing; fetch the 1026-slice study first");
+    assert!(
+        dir.exists(),
+        "data/big missing; fetch the 1026-slice study first"
+    );
 
     let scan = strata_dicom::scan::scan_directory(&dir).expect("scan must succeed");
     let series = scan
@@ -387,7 +396,11 @@ fn level2_cascade_error_vs_direct_from_level0() {
     let shared: strata_server::routes::SharedIndex = Arc::new(Mutex::new(index));
     let mem_cache = volume::VolumeCache::new();
     let cache_dir = tempfile::tempdir().unwrap();
-    let disk_cache = DiskCache::new(cache_dir.path().to_path_buf()).unwrap();
+    let disk_cache = DiskCache::new(
+        cache_dir.path().to_path_buf(),
+        strata_server::disk_cache::DEFAULT_MAX_CACHE_BYTES,
+    )
+    .unwrap();
 
     let (level0, _) = volume::fetch(&shared, &mem_cache, &disk_cache, &uid, 0)
         .unwrap()
@@ -397,12 +410,18 @@ fn level2_cascade_error_vs_direct_from_level0() {
         .expect("series must be found");
 
     // Direct: one factor-4 box average straight from level 0.
-    let (direct, dx, dy, dz) = downsample(&level0.data, level0.dim_x, level0.dim_y, level0.dim_z, 4);
+    let (direct, dx, dy, dz) =
+        downsample(&level0.data, level0.dim_x, level0.dim_y, level0.dim_z, 4);
     // Cascaded: a factor-2 box average of level 1, which is itself a
     // factor-2 box average of level 0.
-    let (cascaded, cx, cy, cz) = downsample(&level1.data, level1.dim_x, level1.dim_y, level1.dim_z, 2);
+    let (cascaded, cx, cy, cz) =
+        downsample(&level1.data, level1.dim_x, level1.dim_y, level1.dim_z, 2);
 
-    assert_eq!((dx, dy, dz), (cx, cy, cz), "both paths must agree on output dims");
+    assert_eq!(
+        (dx, dy, dz),
+        (cx, cy, cz),
+        "both paths must agree on output dims"
+    );
 
     let max_abs_diff = direct
         .iter()

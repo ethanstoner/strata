@@ -10,7 +10,10 @@ fn fixture_builder_produces_a_readable_file() {
     let p = common::write_slice(dir.path(), &common::FixtureSlice::default());
     let obj = dicom::object::open_file(&p).expect("fixture must be valid DICOM");
     assert_eq!(
-        obj.element_by_name("Rows").unwrap().to_int::<u16>().unwrap(),
+        obj.element_by_name("Rows")
+            .unwrap()
+            .to_int::<u16>()
+            .unwrap(),
         64
     );
 }
@@ -191,7 +194,11 @@ fn separates_two_interleaved_series_in_one_directory() {
     }
 
     let result = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(result.series.len(), 2, "expected two distinct series manifests");
+    assert_eq!(
+        result.series.len(),
+        2,
+        "expected two distinct series manifests"
+    );
     assert!(result.series.iter().all(|m| m.slices.len() == 3));
 }
 
@@ -427,7 +434,10 @@ fn extracts_series_and_study_description() {
 
     let meta = SliceMeta::from_file(&p).expect("valid fixture must parse");
 
-    assert_eq!(meta.series_description, Some("Chest Routine #1".to_string()));
+    assert_eq!(
+        meta.series_description,
+        Some("Chest Routine #1".to_string())
+    );
     assert_eq!(meta.study_description, Some("CT Chest".to_string()));
 }
 
@@ -555,7 +565,11 @@ fn two_series_same_patient_are_distinguishable_by_description() {
     }
 
     let result = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(result.series.len(), 2, "expected two distinct series manifests");
+    assert_eq!(
+        result.series.len(),
+        2,
+        "expected two distinct series manifests"
+    );
 
     let manifest_a = result
         .series

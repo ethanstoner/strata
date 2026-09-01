@@ -26,7 +26,10 @@ pub struct ScanResult {
 fn looks_like_dicom(path: &Path) -> bool {
     let mut header = Vec::new();
     if std::fs::File::open(path)
-        .and_then(|f| f.take((PREAMBLE_LEN + MAGIC_CODE.len()) as u64).read_to_end(&mut header))
+        .and_then(|f| {
+            f.take((PREAMBLE_LEN + MAGIC_CODE.len()) as u64)
+                .read_to_end(&mut header)
+        })
         .is_err()
     {
         return false;

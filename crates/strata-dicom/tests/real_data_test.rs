@@ -10,15 +10,17 @@ use std::path::PathBuf;
 use strata_dicom::scan::scan_directory;
 
 fn sample_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../data/sample")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/sample")
 }
 
 #[test]
 #[ignore]
 fn scans_a_real_series() {
     let dir = sample_dir();
-    assert!(dir.exists(), "data/sample missing; fetch a TCIA series first");
+    assert!(
+        dir.exists(),
+        "data/sample missing; fetch a TCIA series first"
+    );
 
     let result = scan_directory(&dir).expect("scan must not abort on real data");
 
@@ -42,7 +44,11 @@ fn scans_a_real_series() {
 
         let depths: Vec<f64> = s.slices.iter().map(|x| x.depth).collect();
         if depths.len() > 1 {
-            println!("    depth range: {:.2} .. {:.2}", depths[0], depths[depths.len() - 1]);
+            println!(
+                "    depth range: {:.2} .. {:.2}",
+                depths[0],
+                depths[depths.len() - 1]
+            );
             // The whole crate exists to guarantee this.
             assert!(
                 depths.windows(2).all(|w| w[0] <= w[1]),
@@ -52,7 +58,10 @@ fn scans_a_real_series() {
 
         // If the scanner accepted these as one series they must agree on size,
         // otherwise they cannot form a coherent volume.
-        assert!(s.slices.iter().all(|x| x.rows == s.rows && x.cols == s.cols));
+        assert!(s
+            .slices
+            .iter()
+            .all(|x| x.rows == s.rows && x.cols == s.cols));
     }
 
     assert!(!result.series.is_empty(), "found no series in real data");
@@ -75,7 +84,9 @@ fn reports_instance_number_versus_geometric_order() {
         let ascending = s.slices.windows(2).all(|w| w[0].depth <= w[1].depth);
         println!(
             "series {} : {} slices, depth ascending = {}",
-            &s.series_uid[..20.min(s.series_uid.len())], n, ascending
+            &s.series_uid[..20.min(s.series_uid.len())],
+            n,
+            ascending
         );
     }
 }

@@ -116,12 +116,10 @@ impl SliceMeta {
             obj.element(tags::RESCALE_SLOPE).ok(),
             obj.element(tags::RESCALE_INTERCEPT).ok(),
         ) {
-            (Some(slope), Some(intercept)) => {
-                match (slope.to_float64(), intercept.to_float64()) {
-                    (Ok(s), Ok(i)) => Some((s, i)),
-                    _ => None,
-                }
-            }
+            (Some(slope), Some(intercept)) => match (slope.to_float64(), intercept.to_float64()) {
+                (Ok(s), Ok(i)) => Some((s, i)),
+                _ => None,
+            },
             _ => None,
         };
 

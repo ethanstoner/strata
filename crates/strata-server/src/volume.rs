@@ -51,7 +51,7 @@ impl Volume {
 /// with ceiling division so a partial edge block still counts as one voxel
 /// instead of being dropped.
 pub fn output_dims(base_x: u32, base_y: u32, base_z: u32, factor: u32) -> (u32, u32, u32) {
-    let ceil_div = |d: u32| (d + factor - 1) / factor;
+    let ceil_div = |d: u32| d.div_ceil(factor);
     (ceil_div(base_x), ceil_div(base_y), ceil_div(base_z))
 }
 
@@ -78,11 +78,16 @@ pub fn downsample(
         return (data.to_vec(), dim_x, dim_y, dim_z);
     }
 
-    let (dim_x, dim_y, dim_z, factor) = (dim_x as usize, dim_y as usize, dim_z as usize, factor as usize);
+    let (dim_x, dim_y, dim_z, factor) = (
+        dim_x as usize,
+        dim_y as usize,
+        dim_z as usize,
+        factor as usize,
+    );
     let (new_x, new_y, new_z) = (
-        (dim_x + factor - 1) / factor,
-        (dim_y + factor - 1) / factor,
-        (dim_z + factor - 1) / factor,
+        dim_x.div_ceil(factor),
+        dim_y.div_ceil(factor),
+        dim_z.div_ceil(factor),
     );
 
     let mut out = vec![0i16; new_x * new_y * new_z];
@@ -346,7 +351,12 @@ pub fn fetch(
 /// one more application of the same rounding mechanism, so it's expected
 /// to stay in the same single-digit-HU range, but that's an expectation,
 /// not a measurement.
-#[allow(clippy::too_many_arguments)]
+// `index` is only threaded through to the recursive call, not read directly
+// at this level — kept as a real parameter (not `_index`) because it's part
+// of the same resolved-context bundle as `detail`/`paths`/`source_*` that
+// every level of the recursion carries, and `_index` at the call site would
+// read as unused rather than as "passed on".
+#[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
 fn fetch_level(
     index: &SharedIndex,
     cache: &VolumeCache,
@@ -396,13 +406,124 @@ fn fetch_level(
         })
     };
 
-    // A failed cache write must not fail the request — the client still
-    // gets its volume, just without the disk-cache speedup next time.
-    // Likely causes are a full disk or a permissions issue, both
-    // operational, not a reason to fail an otherwise-successful decode.
-    if let Err(e) = disk_cache.put(uid, level, &volume, source_slice_count, source_mtime) {
-        eprintln!("disk cache: failed to persist {uid} level {level}: {e}");
-    }
+    maybe_persist_to_disk(
+        disk_cache,
+        uid,
+        level,
+        &volume,
+        source_slice_count,
+        source_mtime,
+    );
     cache.insert(key, volume.clone());
     Ok((volume, CacheSource::Rebuilt))
+}
+
+/// Persists `volume` to `disk_cache`, unless serving it would exceed
+/// `MAX_OUTPUT_BYTES` — a level that can never leave this process as a
+/// response body (level 0 of a large study, e.g. 513MB for `data/big`) is
+/// only ever an intermediate used to cascade down to a lower, servable
+/// level, so writing it to disk buys nothing and just burns space (on
+/// `data/big` this was the single largest cache entry: 513MB, more than the
+/// rest of the whole pyramid combined). It stays reachable in memory for
+/// the rest of this recursion via `cache.insert` in the caller either way.
+///
+/// A failed cache write must not fail the request — the client still gets
+/// its volume, just without the disk-cache speedup next time. Likely causes
+/// are a full disk or a permissions issue, both operational, not a reason
+/// to fail an otherwise-successful decode.
+fn maybe_persist_to_disk(
+    disk_cache: &DiskCache,
+    uid: &str,
+    level: u32,
+    volume: &Volume,
+    source_slice_count: u32,
+    source_mtime: SystemTime,
+) {
+    let bytes = output_bytes(volume.dim_x, volume.dim_y, volume.dim_z);
+    if bytes > MAX_OUTPUT_BYTES {
+        eprintln!(
+            "disk cache: not persisting {uid} level {level} ({bytes} bytes exceeds the {MAX_OUTPUT_BYTES}-byte serving limit; kept in memory only)"
+        );
+        return;
+    }
+    if let Err(e) = disk_cache.put(uid, level, volume, source_slice_count, source_mtime) {
+        eprintln!("disk cache: failed to persist {uid} level {level}: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// A fabricated over-limit volume never reaches `DiskCache::put` at
+    /// all — verified by checking no cache entry exists afterward, since a
+    /// bug that skipped the guard would still leave a real file on disk.
+    /// `data` deliberately doesn't match `dim_x*dim_y*dim_z` (way fewer
+    /// elements): the guard only inspects the declared dimensions, so this
+    /// avoids actually allocating an 800MB+ buffer just to trip it, and if
+    /// the guard were ever bypassed the mismatched data would still produce
+    /// a real (if wrong) file, so the "no file" assertion stays meaningful.
+    #[test]
+    fn unservable_levels_are_not_written_to_disk() {
+        let dir = tempdir().unwrap();
+        let disk_cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            crate::disk_cache::DEFAULT_MAX_CACHE_BYTES,
+        )
+        .unwrap();
+        let mtime = SystemTime::now();
+
+        let huge = Volume {
+            dim_x: 650,
+            dim_y: 650,
+            dim_z: 650, // 650^3 * 2 bytes ~= 524MB, just over the 512MB limit
+            spacing_x: 1.0,
+            spacing_y: 1.0,
+            spacing_z: 1.0,
+            hu_calibrated: true,
+            data: vec![0i16; 8],
+        };
+        assert!(
+            output_bytes(huge.dim_x, huge.dim_y, huge.dim_z) > MAX_OUTPUT_BYTES,
+            "test fixture must actually exceed the serving limit"
+        );
+
+        maybe_persist_to_disk(&disk_cache, "SERIES1", 0, &huge, 650, mtime);
+
+        assert!(
+            disk_cache.get("SERIES1", 0, 650, mtime).is_none(),
+            "an unservable level must leave no disk cache entry"
+        );
+        assert_eq!(disk_cache.entry_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn servable_levels_are_written_to_disk() {
+        let dir = tempdir().unwrap();
+        let disk_cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            crate::disk_cache::DEFAULT_MAX_CACHE_BYTES,
+        )
+        .unwrap();
+        let mtime = SystemTime::now();
+
+        let small = Volume {
+            dim_x: 2,
+            dim_y: 2,
+            dim_z: 2,
+            spacing_x: 1.0,
+            spacing_y: 1.0,
+            spacing_z: 1.0,
+            hu_calibrated: true,
+            data: vec![0i16; 8],
+        };
+
+        maybe_persist_to_disk(&disk_cache, "SERIES1", 1, &small, 8, mtime);
+
+        assert!(
+            disk_cache.get("SERIES1", 1, 8, mtime).is_some(),
+            "a servable level must be persisted"
+        );
+    }
 }
