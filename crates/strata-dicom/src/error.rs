@@ -17,6 +17,9 @@ pub enum DicomError {
     #[error("missing required tag {tag} in {file}", file = .file.display())]
     MissingTag { tag: String, file: PathBuf },
 
+    #[error("ImagePositionPatient contains a non-finite value in {file}", file = .file.display())]
+    NonFinitePosition { file: PathBuf },
+
     #[allow(dead_code)]
     #[error("unsupported transfer syntax {uid} in {file}", file = .file.display())]
     UnsupportedTransferSyntax { uid: String, file: PathBuf },

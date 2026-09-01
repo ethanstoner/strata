@@ -33,6 +33,9 @@ pub struct FixtureSlice {
     pub rescale: Option<(f64, f64)>,
     pub rows: u16,
     pub cols: u16,
+    /// Element keyword (e.g. "ImageOrientationPatient") to leave off the
+    /// written file entirely, so tests can exercise MissingTag paths.
+    pub omit_tag: Option<&'static str>,
 }
 
 impl Default for FixtureSlice {
@@ -47,6 +50,7 @@ impl Default for FixtureSlice {
             rescale: Some((1.0, -1024.0)),
             rows: 64,
             cols: 64,
+            omit_tag: None,
         }
     }
 }
@@ -96,48 +100,67 @@ pub fn write_slice(dir: &Path, s: &FixtureSlice) -> PathBuf {
     let sop_instance_uid = format!("1.2.826.0.1.3680043.8.498.9.{n}");
 
     let mut obj = InMemDicomObject::new_empty();
+    let omit = |name: &str| s.omit_tag == Some(name);
 
-    put(&mut obj, tags::PATIENT_ID, VR::LO, text_value(&s.patient_id));
-    put(
-        &mut obj,
-        tags::STUDY_INSTANCE_UID,
-        VR::UI,
-        uid_value(&s.study_uid),
-    );
-    put(
-        &mut obj,
-        tags::SERIES_INSTANCE_UID,
-        VR::UI,
-        uid_value(&s.series_uid),
-    );
-    put(
-        &mut obj,
-        tags::SOP_INSTANCE_UID,
-        VR::UI,
-        uid_value(&sop_instance_uid),
-    );
+    if !omit("PatientID") {
+        put(&mut obj, tags::PATIENT_ID, VR::LO, text_value(&s.patient_id));
+    }
+    if !omit("StudyInstanceUID") {
+        put(
+            &mut obj,
+            tags::STUDY_INSTANCE_UID,
+            VR::UI,
+            uid_value(&s.study_uid),
+        );
+    }
+    if !omit("SeriesInstanceUID") {
+        put(
+            &mut obj,
+            tags::SERIES_INSTANCE_UID,
+            VR::UI,
+            uid_value(&s.series_uid),
+        );
+    }
+    if !omit("SOPInstanceUID") {
+        put(
+            &mut obj,
+            tags::SOP_INSTANCE_UID,
+            VR::UI,
+            uid_value(&sop_instance_uid),
+        );
+    }
     put(
         &mut obj,
         tags::SOP_CLASS_UID,
         VR::UI,
         uid_value(SOP_CLASS_CT_IMAGE_STORAGE),
     );
-    put(&mut obj, tags::MODALITY, VR::CS, text_value("CT"));
+    if !omit("Modality") {
+        put(&mut obj, tags::MODALITY, VR::CS, text_value("CT"));
+    }
     put(&mut obj, tags::INSTANCE_NUMBER, VR::IS, is(s.instance_number));
-    put(&mut obj, tags::ROWS, VR::US, PrimitiveValue::from(s.rows));
-    put(&mut obj, tags::COLUMNS, VR::US, PrimitiveValue::from(s.cols));
-    put(
-        &mut obj,
-        tags::IMAGE_POSITION_PATIENT,
-        VR::DS,
-        ds(&s.position),
-    );
-    put(
-        &mut obj,
-        tags::IMAGE_ORIENTATION_PATIENT,
-        VR::DS,
-        ds(&s.orientation),
-    );
+    if !omit("Rows") {
+        put(&mut obj, tags::ROWS, VR::US, PrimitiveValue::from(s.rows));
+    }
+    if !omit("Columns") {
+        put(&mut obj, tags::COLUMNS, VR::US, PrimitiveValue::from(s.cols));
+    }
+    if !omit("ImagePositionPatient") {
+        put(
+            &mut obj,
+            tags::IMAGE_POSITION_PATIENT,
+            VR::DS,
+            ds(&s.position),
+        );
+    }
+    if !omit("ImageOrientationPatient") {
+        put(
+            &mut obj,
+            tags::IMAGE_ORIENTATION_PATIENT,
+            VR::DS,
+            ds(&s.orientation),
+        );
+    }
     put(&mut obj, tags::PIXEL_SPACING, VR::DS, ds(&[1.0, 1.0]));
     put(&mut obj, tags::SLICE_THICKNESS, VR::DS, ds(&[1.0]));
     put(
