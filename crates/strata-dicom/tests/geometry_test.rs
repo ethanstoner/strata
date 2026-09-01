@@ -35,3 +35,20 @@ fn rejects_degenerate_orientation() {
     // Parallel row and column vectors have no defined normal.
     assert!(slice_normal(&[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]).is_err());
 }
+
+#[test]
+fn rejects_nan_orientation() {
+    assert!(slice_normal(&[1.0, 0.0, 0.0, 0.0, f64::NAN, 0.0]).is_err());
+}
+
+#[test]
+fn rejects_infinite_orientation() {
+    assert!(slice_normal(&[1.0, 0.0, 0.0, 0.0, f64::INFINITY, 0.0]).is_err());
+}
+
+#[test]
+fn coronal_normal_is_unit_length() {
+    let n = slice_normal(&[1.0, 0.0, 0.0, 0.0, 0.0, -1.0]).unwrap();
+    let magnitude = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    assert!((magnitude - 1.0).abs() < 1e-9);
+}

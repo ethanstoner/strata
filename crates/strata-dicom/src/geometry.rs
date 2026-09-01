@@ -6,6 +6,9 @@ pub fn slice_normal(iop: &[f64]) -> Result<[f64; 3], DicomError> {
     if iop.len() != 6 {
         return Err(DicomError::BadOrientation(iop.len()));
     }
+    if iop.iter().any(|v| !v.is_finite()) {
+        return Err(DicomError::NonFiniteOrientation);
+    }
 
     let row = [iop[0], iop[1], iop[2]];
     let col = [iop[3], iop[4], iop[5]];
