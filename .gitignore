@@ -16,6 +16,8 @@ dist/
 # Local data and caches — DICOM archives are large and are never committed
 /data/
 /cache/
+# default --cache-dir, created next to the index by a plain `strata-server` run
+strata-cache/
 *.dcm
 *.sqlite
 *.sqlite-journal
