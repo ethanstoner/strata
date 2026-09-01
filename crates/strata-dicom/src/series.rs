@@ -70,26 +70,6 @@ impl SeriesManifest {
             warnings,
         }
     }
-
-    /// A sentinel manifest for warnings that can't be attributed to a series
-    /// because parsing failed before `series_uid` could be read. Carries no
-    /// slices, so it's never a candidate for HU calibration or volume rendering.
-    pub(crate) fn unattributed(warnings: Vec<String>) -> SeriesManifest {
-        SeriesManifest {
-            series_uid: String::new(),
-            study_uid: String::new(),
-            patient_id: String::new(),
-            modality: String::new(),
-            rows: 0,
-            cols: 0,
-            slices: Vec::new(),
-            uniform_spacing: true,
-            spacing_mm: None,
-            hu_calibrated: false,
-            is_volume: false,
-            warnings,
-        }
-    }
 }
 
 /// Median of consecutive depth deltas, and whether every delta is within 1%

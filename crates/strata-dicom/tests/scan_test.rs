@@ -153,10 +153,10 @@ fn orders_by_geometry_when_instance_numbers_are_shuffled() {
         },
     );
 
-    let manifests = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(manifests.len(), 1);
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
 
-    let depths: Vec<f64> = manifests[0].slices.iter().map(|s| s.depth).collect();
+    let depths: Vec<f64> = result.series[0].slices.iter().map(|s| s.depth).collect();
     assert_eq!(
         depths,
         vec![0.0, 5.0, 10.0],
@@ -190,9 +190,9 @@ fn separates_two_interleaved_series_in_one_directory() {
         );
     }
 
-    let manifests = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(manifests.len(), 2, "expected two distinct series manifests");
-    assert!(manifests.iter().all(|m| m.slices.len() == 3));
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 2, "expected two distinct series manifests");
+    assert!(result.series.iter().all(|m| m.slices.len() == 3));
 }
 
 #[test]
@@ -208,9 +208,9 @@ fn flags_non_uniform_slice_spacing() {
         );
     }
 
-    let manifests = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(manifests.len(), 1);
-    assert!(!manifests[0].uniform_spacing);
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
+    assert!(!result.series[0].uniform_spacing);
 }
 
 #[test]
@@ -226,10 +226,10 @@ fn uniform_spacing_is_true_for_even_slices() {
         );
     }
 
-    let manifests = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(manifests.len(), 1);
-    assert!(manifests[0].uniform_spacing);
-    let spacing = manifests[0]
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
+    assert!(result.series[0].uniform_spacing);
+    let spacing = result.series[0]
         .spacing_mm
         .expect("multi-slice series must report a spacing");
     assert!((spacing - 5.0).abs() < 1e-9);
@@ -263,10 +263,10 @@ fn series_is_uncalibrated_if_any_slice_lacks_rescale() {
         },
     );
 
-    let manifests = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(manifests.len(), 1);
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
     assert!(
-        !manifests[0].hu_calibrated,
+        !result.series[0].hu_calibrated,
         "a partially calibrated series must not be reported as calibrated"
     );
 }
@@ -276,9 +276,9 @@ fn single_slice_series_is_not_a_volume() {
     let dir = tempfile::tempdir().unwrap();
     common::write_slice(dir.path(), &common::FixtureSlice::default());
 
-    let manifests = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(manifests.len(), 1);
-    assert!(!manifests[0].is_volume);
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
+    assert!(!result.series[0].is_volume);
 }
 
 #[test]
@@ -306,17 +306,21 @@ fn unparseable_file_becomes_a_warning_not_a_scan_failure() {
         },
     );
 
-    let manifests = scan_directory(dir.path()).expect("a corrupt file must not fail the scan");
+    let result = scan_directory(dir.path()).expect("a corrupt file must not fail the scan");
 
-    let total_slices: usize = manifests.iter().map(|m| m.slices.len()).sum();
+    let total_slices: usize = result.series.iter().map(|m| m.slices.len()).sum();
     assert_eq!(total_slices, 2, "the two good slices must still be present");
 
     let bad_name = bad_path.file_name().unwrap().to_str().unwrap();
-    let found_warning = manifests
-        .iter()
-        .flat_map(|m| &m.warnings)
-        .any(|w| w.contains(bad_name));
-    assert!(found_warning, "expected a warning naming {bad_name}");
+    assert!(
+        result.warnings.iter().any(|w| w.contains(bad_name)),
+        "expected a scan-level warning naming {bad_name}, got {:?}",
+        result.warnings
+    );
+    assert!(
+        result.series.iter().all(|m| m.warnings.is_empty()),
+        "a file whose series is unrecoverable must not be attached to a real series"
+    );
 }
 
 #[test]
@@ -338,11 +342,75 @@ fn non_dicom_files_are_skipped_silently() {
     );
     std::fs::write(dir.path().join("notes.txt"), b"hello").unwrap();
 
-    let manifests = scan_directory(dir.path()).expect("scan must succeed");
-    assert_eq!(manifests.len(), 1);
-    assert_eq!(manifests[0].slices.len(), 2);
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
+    assert_eq!(result.series[0].slices.len(), 2);
     assert!(
-        manifests.iter().all(|m| m.warnings.is_empty()),
-        "a non-DICOM file must not generate a warning"
+        result.series[0].warnings.is_empty(),
+        "a non-DICOM file must not generate a per-series warning"
     );
+    assert!(
+        result.warnings.is_empty(),
+        "a non-DICOM file must not generate a scan-level warning either"
+    );
+}
+
+#[test]
+fn parses_dicom_without_a_128_byte_preamble() {
+    let dir = tempfile::tempdir().unwrap();
+    let normal_path = common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 0.0],
+            ..Default::default()
+        },
+    );
+
+    let bytes = std::fs::read(&normal_path).expect("fixture file must be readable");
+    let dicm_offset = bytes
+        .windows(4)
+        .position(|w| w == b"DICM")
+        .expect("a valid fixture must contain the DICM magic code");
+    let stripped = &bytes[dicm_offset..];
+    assert_eq!(
+        &stripped[0..4],
+        b"DICM",
+        "stripped file must begin with the magic code, with no preamble"
+    );
+
+    let no_preamble_path = dir.path().join("no_preamble.dcm");
+    std::fs::write(&no_preamble_path, stripped).expect("must write stripped fixture");
+
+    // If dicom-rs itself can't open a preamble-less file, that's a real
+    // finding worth surfacing rather than a test to force green: the
+    // detector must still recognise it as DICOM and report a warning
+    // naming the file, instead of silently dropping it.
+    match SliceMeta::from_file(&no_preamble_path) {
+        Ok(_) => {
+            let result = scan_directory(dir.path()).expect("scan must succeed");
+            let total_slices: usize = result.series.iter().map(|m| m.slices.len()).sum();
+            assert_eq!(
+                total_slices, 2,
+                "both the normal and the preamble-less slice must be found"
+            );
+            assert!(
+                result.warnings.is_empty() && result.series.iter().all(|m| m.warnings.is_empty()),
+                "a readable preamble-less file must not produce a warning"
+            );
+        }
+        Err(err) => {
+            let result = scan_directory(dir.path()).expect("scan must succeed");
+            let name = no_preamble_path.file_name().unwrap().to_str().unwrap();
+            assert!(
+                result.warnings.iter().any(|w| w.contains(name))
+                    || result
+                        .series
+                        .iter()
+                        .flat_map(|m| &m.warnings)
+                        .any(|w| w.contains(name)),
+                "dicom-rs could not open a preamble-less file ({err}); the scanner must still \
+                 report it as a warning, not drop it silently"
+            );
+        }
+    }
 }
