@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{FromRef, Path as AxumPath, Query, State};
@@ -9,6 +10,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tower_http::services::ServeDir;
 
+use crate::disk_cache::DiskCache;
 use crate::index::Index;
 use crate::pixels::decode_slice;
 use crate::volume::{self, VolumeCache};
@@ -17,12 +19,14 @@ use crate::volume::{self, VolumeCache};
 pub type SharedIndex = Arc<Mutex<Index>>;
 
 /// Router state. Handlers extract the piece they need (`State<SharedIndex>`,
-/// `State<Arc<VolumeCache>>`) via the `FromRef` impls below rather than this
-/// struct directly, so existing handlers didn't need to change.
+/// `State<Arc<VolumeCache>>`, `State<Arc<DiskCache>>`) via the `FromRef`
+/// impls below rather than this struct directly, so existing handlers
+/// didn't need to change.
 #[derive(Clone)]
 struct AppState {
     index: SharedIndex,
     volume_cache: Arc<VolumeCache>,
+    disk_cache: Arc<DiskCache>,
 }
 
 impl FromRef<AppState> for SharedIndex {
@@ -37,11 +41,24 @@ impl FromRef<AppState> for Arc<VolumeCache> {
     }
 }
 
-/// Builds the API router.
-pub fn build_router(index: SharedIndex) -> Router {
+impl FromRef<AppState> for Arc<DiskCache> {
+    fn from_ref(state: &AppState) -> Self {
+        state.disk_cache.clone()
+    }
+}
+
+static ANON_CACHE_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Builds the API router with a disk-backed volume cache under `cache_dir`.
+/// This is what `main.rs` uses in production, with `cache_dir` derived from
+/// `--cache-dir` or defaulting next to the SQLite index.
+pub fn build_router_with_cache_dir(index: SharedIndex, cache_dir: PathBuf) -> Router {
+    let disk_cache =
+        Arc::new(DiskCache::new(cache_dir).expect("failed to create volume disk cache directory"));
     let state = AppState {
         index,
         volume_cache: Arc::new(VolumeCache::new()),
+        disk_cache,
     };
     Router::new()
         .route("/api/health", get(health))
@@ -50,6 +67,16 @@ pub fn build_router(index: SharedIndex) -> Router {
         .route("/api/series/:uid/slices/:ordinal", get(get_slice))
         .route("/api/series/:uid/volume", get(get_volume))
         .with_state(state)
+}
+
+/// Builds the API router with a private, process-unique temp directory as
+/// its disk cache. Existing callers (tests, mainly) that don't care about
+/// cache placement keep working unchanged; each call gets its own
+/// directory so parallel test runs can't collide on the same cache files.
+pub fn build_router(index: SharedIndex) -> Router {
+    let n = ANON_CACHE_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("strata-cache-{}-{n}", std::process::id()));
+    build_router_with_cache_dir(index, dir)
 }
 
 /// Adds static file serving from `dist_dir` at `/`, with the API routes
@@ -142,6 +169,7 @@ struct VolumeQuery {
 async fn get_volume(
     State(index): State<SharedIndex>,
     State(cache): State<Arc<VolumeCache>>,
+    State(disk_cache): State<Arc<DiskCache>>,
     AxumPath(uid): AxumPath<String>,
     Query(query): Query<VolumeQuery>,
 ) -> Result<Response, AppError> {
@@ -172,13 +200,10 @@ async fn get_volume(
             .into_response());
     }
 
-    let Some((vol, cache_hit)) = volume::fetch(&index, &cache, &uid, level)? else {
+    let Some((vol, source)) = volume::fetch(&index, &cache, &disk_cache, &uid, level)? else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
-    println!(
-        "volume cache {} for series {uid} level {level}",
-        if cache_hit { "hit" } else { "miss" }
-    );
+    println!("volume {source} for series {uid} level {level}");
 
     let mut bytes = Vec::with_capacity(vol.data.len() * 2);
     for v in &vol.data {

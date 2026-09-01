@@ -32,6 +32,8 @@ fn make_slice(ordinal: i32, depth: f64, hu_calibrated: bool) -> SliceMeta {
         pixel_spacing: Some((0.7, 0.7)),
         slice_thickness: Some(5.0),
         depth,
+        series_description: None,
+        study_description: None,
     }
 }
 
@@ -51,6 +53,8 @@ fn make_manifest(hu_calibrated: bool) -> SeriesManifest {
         modality: "CT".to_string(),
         rows: 512,
         cols: 512,
+        series_description: None,
+        study_description: None,
         uniform_spacing: true,
         spacing_mm: Some(5.0),
         hu_calibrated,
@@ -58,6 +62,19 @@ fn make_manifest(hu_calibrated: bool) -> SeriesManifest {
         warnings: Vec::new(),
         slices,
     }
+}
+
+/// Same fixture with descriptions overridden, for the description-specific
+/// tests below — avoids duplicating the whole slice/manifest construction
+/// just to vary two optional fields.
+fn make_manifest_with_descriptions(
+    series_description: Option<&str>,
+    study_description: Option<&str>,
+) -> SeriesManifest {
+    let mut m = make_manifest(true);
+    m.series_description = series_description.map(str::to_string);
+    m.study_description = study_description.map(str::to_string);
+    m
 }
 
 fn app_with(manifests: &[SeriesManifest]) -> axum::Router {
@@ -198,6 +215,53 @@ async fn hu_calibrated_false_is_preserved_through_the_api() {
         .unwrap();
     let json = body_json(response).await;
     assert_eq!(json[0]["hu_calibrated"], false);
+}
+
+#[tokio::test]
+async fn series_description_round_trips_through_the_index_to_detail_json() {
+    let app = app_with(&[make_manifest_with_descriptions(
+        Some("Chest Routine #1"),
+        Some("CT Chest"),
+    )]);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/series/SERIES1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["series_description"], "Chest Routine #1");
+    assert_eq!(json["study_description"], "CT Chest");
+}
+
+#[tokio::test]
+async fn missing_description_serialises_as_json_null_not_empty_string() {
+    // No scanner-provided description at all — must be `null`, never `""`
+    // and never a fabricated placeholder like the series UID.
+    let app = app_with(&[make_manifest_with_descriptions(None, None)]);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/series/SERIES1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert!(json["series_description"].is_null());
+    assert!(json["study_description"].is_null());
+    assert_ne!(json["series_description"], serde_json::json!(""));
+    assert_ne!(json["study_description"], serde_json::json!(""));
 }
 
 #[tokio::test]

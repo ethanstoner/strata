@@ -1,6 +1,12 @@
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
+use rayon::prelude::*;
+
+use crate::disk_cache::DiskCache;
+use crate::index::SeriesDetail;
 use crate::pixels::decode_slice;
 use crate::routes::SharedIndex;
 
@@ -15,7 +21,7 @@ const CACHE_BOUND: usize = 16;
 
 /// A fully-assembled volume at some pyramid level, ready to serve as raw
 /// little-endian i16, x fastest, then y, then z.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Volume {
     pub dim_x: u32,
     pub dim_y: u32,
@@ -114,17 +120,30 @@ pub fn downsample(
 }
 
 /// Decodes every slice of a series and assembles the full-resolution
-/// volume. `Ok(None)` means the series is unknown, mirroring every other
-/// handler's 404-not-500 convention.
-fn assemble_level0(index: &SharedIndex, uid: &str) -> anyhow::Result<Option<Volume>> {
-    let detail = index.lock().unwrap().get_series(uid)?;
-    let Some(detail) = detail else {
-        return Ok(None);
-    };
-
+/// volume. Decoding is CPU-bound and each slice is independent, so it fans
+/// out across every core via rayon; each worker writes straight into its
+/// own chunk of `data`, so the geometric ordinal order (chunk index, which
+/// mirrors `paths`' order) falls out of the write target rather than
+/// needing a merge step or a shared, lock-protected `Vec` that parallel
+/// pushes could reorder.
+///
+/// A single slice that fails to decode fails the whole request, naming the
+/// offending ordinal and file. Substituting zeros for a bad slice was
+/// rejected: it would render as a black band of "air" through the patient,
+/// which looks like a successful, trustworthy result and is far more
+/// dangerous than a loud error.
+fn assemble_level0(detail: &SeriesDetail, paths: &[PathBuf]) -> anyhow::Result<Volume> {
     let dim_x = detail.cols as u32;
     let dim_y = detail.rows as u32;
     let dim_z = detail.slice_count;
+
+    if paths.len() != dim_z as usize {
+        anyhow::bail!(
+            "series {}: index has {} slice paths but reports slice_count {dim_z}",
+            detail.series_uid,
+            paths.len()
+        );
+    }
 
     // DICOM PixelSpacing is (row spacing, column spacing): row spacing is
     // the distance between rows, i.e. the y-axis step; column spacing is
@@ -140,17 +159,31 @@ fn assemble_level0(index: &SharedIndex, uid: &str) -> anyhow::Result<Option<Volu
     // can differ from the true interval when slices overlap or are gapped.
     let spacing_z = detail.spacing_mm.unwrap_or(1.0);
 
-    let mut data = Vec::with_capacity(dim_x as usize * dim_y as usize * dim_z as usize);
-    for ordinal in 0..dim_z {
-        let path = index.lock().unwrap().slice_path(uid, ordinal)?;
-        let Some(path) = path else {
-            anyhow::bail!("series {uid} is missing slice ordinal {ordinal}");
-        };
-        let decoded = decode_slice(&path)?;
-        data.extend_from_slice(&decoded.data);
-    }
+    let slice_voxels = dim_x as usize * dim_y as usize;
+    let mut data = vec![0i16; slice_voxels * dim_z as usize];
 
-    Ok(Some(Volume {
+    data.par_chunks_mut(slice_voxels)
+        .zip(paths.par_iter())
+        .enumerate()
+        .try_for_each(|(ordinal, (chunk, path))| -> anyhow::Result<()> {
+            let decoded = decode_slice(path).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to decode slice ordinal {ordinal} ({}): {e}",
+                    path.display()
+                )
+            })?;
+            if decoded.data.len() != slice_voxels {
+                anyhow::bail!(
+                    "slice ordinal {ordinal} ({}) decoded to {} voxels, expected {slice_voxels} ({dim_x}x{dim_y})",
+                    path.display(),
+                    decoded.data.len()
+                );
+            }
+            chunk.copy_from_slice(&decoded.data);
+            Ok(())
+        })?;
+
+    Ok(Volume {
         dim_x,
         dim_y,
         dim_z,
@@ -159,7 +192,25 @@ fn assemble_level0(index: &SharedIndex, uid: &str) -> anyhow::Result<Option<Volu
         spacing_z,
         hu_calibrated: detail.hu_calibrated,
         data,
-    }))
+    })
+}
+
+/// Newest mtime across a series' source files, used together with the
+/// slice count as the disk cache's staleness fingerprint: if a study is
+/// re-scanned with different or updated files, either value changes and
+/// every existing cache entry for that series is treated as a miss rather
+/// than served. Getting this wrong would mean serving one patient's cached
+/// volume under another patient's series UID after a re-index — the worst
+/// possible bug for this program, so this is checked, not assumed.
+fn newest_source_mtime(paths: &[PathBuf]) -> anyhow::Result<SystemTime> {
+    let mut newest = SystemTime::UNIX_EPOCH;
+    for path in paths {
+        let modified = std::fs::metadata(path)?.modified()?;
+        if modified > newest {
+            newest = modified;
+        }
+    }
+    Ok(newest)
 }
 
 type CacheKey = (String, u32);
@@ -210,52 +261,148 @@ impl Default for VolumeCache {
     }
 }
 
-/// Returns the requested volume plus whether it was already cached.
-/// `Ok(None)` means the series is unknown. Level 0 is always assembled (or
-/// fetched from cache) first; higher levels downsample from it, so a
-/// level-0 cache hit is shared across every level of the same series.
+/// Where a served volume came from, for logging. Ordered cheapest-first:
+/// a request either lands in the in-memory cache, then the on-disk cache,
+/// and only then pays for a real rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheSource {
+    Memory,
+    Disk,
+    Rebuilt,
+}
+
+impl std::fmt::Display for CacheSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CacheSource::Memory => "memory-hit",
+            CacheSource::Disk => "disk-hit",
+            CacheSource::Rebuilt => "miss",
+        })
+    }
+}
+
+/// Returns the requested volume plus where it came from. `Ok(None)` means
+/// the series is unknown.
+///
+/// Fetches the series' detail/paths/staleness-fingerprint once, then
+/// delegates to `fetch_level`, which recurses down through the pyramid
+/// (each level built from the one below rather than always from level 0 —
+/// see the comment there for why that's safe).
 pub fn fetch(
     index: &SharedIndex,
     cache: &VolumeCache,
+    disk_cache: &DiskCache,
     uid: &str,
     level: u32,
-) -> anyhow::Result<Option<(Arc<Volume>, bool)>> {
+) -> anyhow::Result<Option<(Arc<Volume>, CacheSource)>> {
     let key = (uid.to_string(), level);
     if let Some(v) = cache.get(&key) {
-        return Ok(Some((v, true)));
+        return Ok(Some((v, CacheSource::Memory)));
     }
 
-    let level0_key = (uid.to_string(), 0);
-    let level0 = match cache.get(&level0_key) {
-        Some(v) => v,
-        None => {
-            let Some(v0) = assemble_level0(index, uid)? else {
-                return Ok(None);
-            };
-            let v0 = Arc::new(v0);
-            cache.insert(level0_key, v0.clone());
-            v0
-        }
+    let detail = index.lock().unwrap().get_series(uid)?;
+    let Some(detail) = detail else {
+        return Ok(None);
     };
 
+    // Needed regardless of hit/miss: the disk cache can't be trusted
+    // without checking it against the *current* state of the source files.
+    let paths = index.lock().unwrap().slice_paths(uid)?;
+    let source_slice_count = detail.slice_count;
+    let source_mtime = newest_source_mtime(&paths)?;
+
+    fetch_level(
+        index,
+        cache,
+        disk_cache,
+        uid,
+        level,
+        &detail,
+        &paths,
+        source_slice_count,
+        source_mtime,
+    )
+    .map(Some)
+}
+
+/// Builds or fetches one pyramid level, given the series' already-resolved
+/// detail/paths/staleness fingerprint (computed once by `fetch`, reused
+/// across the whole recursion instead of re-querying the index at every
+/// level).
+///
+/// Lookup order per level: in-memory cache -> on-disk cache -> build. To
+/// build level N (N >= 1), this recurses for level N-1 through the same
+/// order rather than always downsampling from level 0 by 2^N in one step.
+///
+/// Repeated factor-2 box-averaging is not bit-identical to one wider box
+/// average, so this was verified before being wired in: on `data/big`
+/// (1026 slices), level 2 built by cascading through level 1 differs from
+/// level 2 built directly from level 0 by at most 1 HU (mean 0.09 HU),
+/// against a working range in the thousands — see
+/// `level2_cascade_error_vs_direct_from_level0` in tests/volume_test.rs.
+/// That's indistinguishable for rendering, and cascading does roughly 8x
+/// less work for level 2 (and more for level 3), so every level here
+/// cascades. Level 3's cascade error was not separately measured — it's
+/// one more application of the same rounding mechanism, so it's expected
+/// to stay in the same single-digit-HU range, but that's an expectation,
+/// not a measurement.
+#[allow(clippy::too_many_arguments)]
+fn fetch_level(
+    index: &SharedIndex,
+    cache: &VolumeCache,
+    disk_cache: &DiskCache,
+    uid: &str,
+    level: u32,
+    detail: &SeriesDetail,
+    paths: &[PathBuf],
+    source_slice_count: u32,
+    source_mtime: SystemTime,
+) -> anyhow::Result<(Arc<Volume>, CacheSource)> {
+    let key = (uid.to_string(), level);
+    if let Some(v) = cache.get(&key) {
+        return Ok((v, CacheSource::Memory));
+    }
+    if let Some(vol) = disk_cache.get(uid, level, source_slice_count, source_mtime) {
+        let vol = Arc::new(vol);
+        cache.insert(key, vol.clone());
+        return Ok((vol, CacheSource::Disk));
+    }
+
     let volume = if level == 0 {
-        level0
+        Arc::new(assemble_level0(detail, paths)?)
     } else {
-        let factor = 1u32 << level;
+        let (lower, _) = fetch_level(
+            index,
+            cache,
+            disk_cache,
+            uid,
+            level - 1,
+            detail,
+            paths,
+            source_slice_count,
+            source_mtime,
+        )?;
         let (data, dim_x, dim_y, dim_z) =
-            downsample(&level0.data, level0.dim_x, level0.dim_y, level0.dim_z, factor);
+            downsample(&lower.data, lower.dim_x, lower.dim_y, lower.dim_z, 2);
         Arc::new(Volume {
             dim_x,
             dim_y,
             dim_z,
-            spacing_x: level0.spacing_x * factor as f64,
-            spacing_y: level0.spacing_y * factor as f64,
-            spacing_z: level0.spacing_z * factor as f64,
-            hu_calibrated: level0.hu_calibrated,
+            spacing_x: lower.spacing_x * 2.0,
+            spacing_y: lower.spacing_y * 2.0,
+            spacing_z: lower.spacing_z * 2.0,
+            hu_calibrated: lower.hu_calibrated,
             data,
         })
     };
 
+    // A failed cache write must not fail the request — the client still
+    // gets its volume, just without the disk-cache speedup next time.
+    // Likely causes are a full disk or a permissions issue, both
+    // operational, not a reason to fail an otherwise-successful decode.
+    if let Err(e) = disk_cache.put(uid, level, &volume, source_slice_count, source_mtime) {
+        eprintln!("disk cache: failed to persist {uid} level {level}: {e}");
+    }
     cache.insert(key, volume.clone());
-    Ok(Some((volume, false)))
+    Ok((volume, CacheSource::Rebuilt))
 }

@@ -1,11 +1,11 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
 
 use strata_server::index::Index;
-use strata_server::routes::{build_router, with_static_files};
+use strata_server::routes::{build_router_with_cache_dir, with_static_files};
 
 #[derive(Parser)]
 #[command(name = "strata-server")]
@@ -21,6 +21,11 @@ struct Cli {
     /// SQLite index file (created if missing).
     #[arg(long, default_value = "strata.sqlite")]
     index: PathBuf,
+
+    /// Directory for the on-disk pyramid cache. Defaults to a
+    /// `strata-cache` folder next to `--index`.
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -45,8 +50,17 @@ async fn main() -> anyhow::Result<()> {
         println!("scan warning: {warning}");
     }
 
+    let cache_dir = cli.cache_dir.clone().unwrap_or_else(|| {
+        cli.index
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join("strata-cache")
+    });
+    println!("volume disk cache: {}", cache_dir.display());
+
     let shared: strata_server::routes::SharedIndex = Arc::new(Mutex::new(index));
-    let mut router = build_router(shared);
+    let mut router = build_router_with_cache_dir(shared, cache_dir);
 
     let dist_dir = PathBuf::from("web/dist");
     if dist_dir.exists() {

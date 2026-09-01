@@ -2089,6 +2089,7 @@ dependencies = [
  "axum",
  "clap",
  "dicom",
+ "rayon",
  "rusqlite",
  "serde",
  "serde_json",

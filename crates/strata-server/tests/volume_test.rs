@@ -7,9 +7,10 @@ use tower::ServiceExt;
 
 use strata_dicom::meta::SliceMeta;
 use strata_dicom::series::SeriesManifest;
+use strata_server::disk_cache::DiskCache;
 use strata_server::index::Index;
 use strata_server::routes::build_router;
-use strata_server::volume::downsample;
+use strata_server::volume::{self, downsample};
 
 /// Built by hand rather than importing strata-dicom's fixture builder, which
 /// lives under that crate's own tests/ and isn't importable from here.
@@ -29,6 +30,8 @@ fn make_slice(ordinal: i32, depth: f64) -> SliceMeta {
         pixel_spacing: Some((0.5, 0.5)),
         slice_thickness: Some(1.0),
         depth,
+        series_description: None,
+        study_description: None,
     }
 }
 
@@ -41,6 +44,8 @@ fn make_manifest() -> SeriesManifest {
         modality: "CT".to_string(),
         rows: 4,
         cols: 4,
+        series_description: None,
+        study_description: None,
         uniform_spacing: true,
         spacing_mm: Some(1.0),
         hu_calibrated: true,
@@ -295,4 +300,125 @@ async fn real_volume_has_expected_shape() {
         .await
         .unwrap();
     assert_eq!(body.len(), 256 * 256 * 30 * 2);
+}
+
+fn big_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/big")
+}
+
+/// Proves the parallel decode in `assemble_level0` produces byte-identical
+/// output to a sequential reference decode, in order. The reference here is
+/// deliberately independent of the server's own assembly path: it decodes
+/// each slice one at a time via `decode_slice`, in the same ordinal order
+/// `SeriesManifest::slices` is already sorted in, and concatenates by hand.
+#[tokio::test]
+#[ignore]
+async fn parallel_decode_matches_sequential() {
+    let dir = sample_dir();
+    assert!(dir.exists(), "data/sample missing; fetch a TCIA series first");
+
+    let scan = strata_dicom::scan::scan_directory(&dir).expect("scan must succeed");
+    let series = scan
+        .series
+        .into_iter()
+        .find(|s| s.is_volume)
+        .expect("expected at least one multi-slice series");
+    let uid = series.series_uid.clone();
+
+    let mut sequential = Vec::new();
+    for slice in &series.slices {
+        let decoded =
+            strata_server::pixels::decode_slice(&slice.path).expect("slice must decode");
+        sequential.extend_from_slice(&decoded.data);
+    }
+
+    let index = Index::open_in_memory().unwrap();
+    index.insert_series(&series).unwrap();
+    let app = build_router(Arc::new(Mutex::new(index)));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/series/{uid}/volume?level=0"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parallel: Vec<i16> = body
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+
+    assert_eq!(parallel.len(), sequential.len());
+    assert_eq!(
+        parallel, sequential,
+        "parallel decode must match sequential decode exactly, in ordinal order"
+    );
+}
+
+/// Quantifies whether level 2 could be built cheaply by downsampling level 1
+/// by 2 (8x less box-average work than downsampling level 0 by 4 directly)
+/// instead of always rebuilding from level 0. Two rounds of box-averaging
+/// are not mathematically identical to one wider box average, so this
+/// measures the real gap on `data/big` (1026 slices) rather than assuming
+/// it's negligible. Not a pass/fail gate on its own — the number it prints
+/// is the evidence backing the decision documented next to `volume::fetch`.
+#[test]
+#[ignore]
+fn level2_cascade_error_vs_direct_from_level0() {
+    let dir = big_dir();
+    assert!(dir.exists(), "data/big missing; fetch the 1026-slice study first");
+
+    let scan = strata_dicom::scan::scan_directory(&dir).expect("scan must succeed");
+    let series = scan
+        .series
+        .into_iter()
+        .find(|s| s.is_volume)
+        .expect("expected at least one multi-slice series");
+    let uid = series.series_uid.clone();
+
+    let index = Index::open_in_memory().unwrap();
+    index.insert_series(&series).unwrap();
+    let shared: strata_server::routes::SharedIndex = Arc::new(Mutex::new(index));
+    let mem_cache = volume::VolumeCache::new();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let disk_cache = DiskCache::new(cache_dir.path().to_path_buf()).unwrap();
+
+    let (level0, _) = volume::fetch(&shared, &mem_cache, &disk_cache, &uid, 0)
+        .unwrap()
+        .expect("series must be found");
+    let (level1, _) = volume::fetch(&shared, &mem_cache, &disk_cache, &uid, 1)
+        .unwrap()
+        .expect("series must be found");
+
+    // Direct: one factor-4 box average straight from level 0.
+    let (direct, dx, dy, dz) = downsample(&level0.data, level0.dim_x, level0.dim_y, level0.dim_z, 4);
+    // Cascaded: a factor-2 box average of level 1, which is itself a
+    // factor-2 box average of level 0.
+    let (cascaded, cx, cy, cz) = downsample(&level1.data, level1.dim_x, level1.dim_y, level1.dim_z, 2);
+
+    assert_eq!((dx, dy, dz), (cx, cy, cz), "both paths must agree on output dims");
+
+    let max_abs_diff = direct
+        .iter()
+        .zip(cascaded.iter())
+        .map(|(a, b)| (*a as i32 - *b as i32).abs())
+        .max()
+        .unwrap();
+    let mean_abs_diff: f64 = direct
+        .iter()
+        .zip(cascaded.iter())
+        .map(|(a, b)| (*a as i32 - *b as i32).abs() as f64)
+        .sum::<f64>()
+        / direct.len() as f64;
+
+    println!(
+        "level2 cascade-vs-direct on data/big: max_abs_diff={max_abs_diff} HU, mean_abs_diff={mean_abs_diff:.4} HU, n={}",
+        direct.len()
+    );
 }

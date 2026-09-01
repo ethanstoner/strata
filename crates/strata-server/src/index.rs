@@ -15,6 +15,8 @@ pub struct SeriesSummary {
     pub modality: String,
     pub rows: u16,
     pub cols: u16,
+    pub series_description: Option<String>,
+    pub study_description: Option<String>,
     pub slice_count: u32,
     pub is_volume: bool,
     pub hu_calibrated: bool,
@@ -31,6 +33,8 @@ pub struct SeriesDetail {
     pub modality: String,
     pub rows: u16,
     pub cols: u16,
+    pub series_description: Option<String>,
+    pub study_description: Option<String>,
     pub slice_count: u32,
     pub is_volume: bool,
     pub hu_calibrated: bool,
@@ -50,6 +54,8 @@ CREATE TABLE IF NOT EXISTS series (
     modality          TEXT NOT NULL,
     rows              INTEGER NOT NULL,
     cols              INTEGER NOT NULL,
+    series_description TEXT,
+    study_description  TEXT,
     uniform_spacing   INTEGER NOT NULL,
     spacing_mm        REAL,
     hu_calibrated     INTEGER NOT NULL,
@@ -73,15 +79,39 @@ pub struct Index {
     conn: Connection,
 }
 
+/// `CREATE TABLE IF NOT EXISTS` doesn't add columns to a table that already
+/// exists, so a `series` table left over from before `series_description`/
+/// `study_description` existed would otherwise make every insert fail with
+/// an opaque "no such column" at runtime. Detect that case up front and
+/// drop the affected tables so `SCHEMA` recreates them cleanly — safe here
+/// specifically because `main.rs` fully re-scans and re-inserts every
+/// series on every startup, so this index is a rebuildable cache, not a
+/// system of record.
+fn migrate_if_needed(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(series)")?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+
+    let is_stale = !columns.is_empty() && !columns.iter().any(|c| c == "series_description");
+    if is_stale {
+        conn.execute_batch("DROP TABLE IF EXISTS series; DROP TABLE IF EXISTS slices;")?;
+    }
+    Ok(())
+}
+
 impl Index {
     pub fn open_in_memory() -> Result<Index> {
         let conn = Connection::open_in_memory()?;
+        migrate_if_needed(&conn)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Index { conn })
     }
 
     pub fn open(path: &Path) -> Result<Index> {
         let conn = Connection::open(path)?;
+        migrate_if_needed(&conn)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Index { conn })
     }
@@ -98,9 +128,10 @@ impl Index {
         tx.execute(
             "INSERT OR REPLACE INTO series (
                 series_uid, study_uid, patient_id, modality, rows, cols,
+                series_description, study_description,
                 uniform_spacing, spacing_mm, hu_calibrated, is_volume, warnings_json,
                 pixel_spacing_row, pixel_spacing_col, slice_thickness
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             rusqlite::params![
                 m.series_uid,
                 m.study_uid,
@@ -108,6 +139,8 @@ impl Index {
                 m.modality,
                 m.rows,
                 m.cols,
+                m.series_description,
+                m.study_description,
                 m.uniform_spacing,
                 m.spacing_mm,
                 m.hu_calibrated,
@@ -138,6 +171,7 @@ impl Index {
     pub fn list_series(&self) -> Result<Vec<SeriesSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.series_uid, s.study_uid, s.patient_id, s.modality, s.rows, s.cols,
+                    s.series_description, s.study_description,
                     s.is_volume, s.hu_calibrated, s.uniform_spacing, s.spacing_mm,
                     (SELECT COUNT(*) FROM slices sl WHERE sl.series_uid = s.series_uid) AS slice_count
              FROM series s
@@ -151,11 +185,13 @@ impl Index {
                 modality: row.get(3)?,
                 rows: row.get(4)?,
                 cols: row.get(5)?,
-                is_volume: row.get(6)?,
-                hu_calibrated: row.get(7)?,
-                uniform_spacing: row.get(8)?,
-                spacing_mm: row.get(9)?,
-                slice_count: row.get(10)?,
+                series_description: row.get(6)?,
+                study_description: row.get(7)?,
+                is_volume: row.get(8)?,
+                hu_calibrated: row.get(9)?,
+                uniform_spacing: row.get(10)?,
+                spacing_mm: row.get(11)?,
+                slice_count: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -166,15 +202,16 @@ impl Index {
             .conn
             .query_row(
                 "SELECT s.series_uid, s.study_uid, s.patient_id, s.modality, s.rows, s.cols,
+                        s.series_description, s.study_description,
                         s.is_volume, s.hu_calibrated, s.uniform_spacing, s.spacing_mm,
                         s.pixel_spacing_row, s.pixel_spacing_col, s.slice_thickness, s.warnings_json,
                         (SELECT COUNT(*) FROM slices sl WHERE sl.series_uid = s.series_uid) AS slice_count
                  FROM series s WHERE s.series_uid = ?1",
                 [uid],
                 |row| {
-                    let pixel_spacing_row: Option<f64> = row.get(10)?;
-                    let pixel_spacing_col: Option<f64> = row.get(11)?;
-                    let warnings_json: String = row.get(13)?;
+                    let pixel_spacing_row: Option<f64> = row.get(12)?;
+                    let pixel_spacing_col: Option<f64> = row.get(13)?;
+                    let warnings_json: String = row.get(15)?;
                     Ok((
                         SeriesDetail {
                             series_uid: row.get(0)?,
@@ -183,17 +220,19 @@ impl Index {
                             modality: row.get(3)?,
                             rows: row.get(4)?,
                             cols: row.get(5)?,
-                            is_volume: row.get(6)?,
-                            hu_calibrated: row.get(7)?,
-                            uniform_spacing: row.get(8)?,
-                            spacing_mm: row.get(9)?,
+                            series_description: row.get(6)?,
+                            study_description: row.get(7)?,
+                            is_volume: row.get(8)?,
+                            hu_calibrated: row.get(9)?,
+                            uniform_spacing: row.get(10)?,
+                            spacing_mm: row.get(11)?,
                             pixel_spacing: pixel_spacing_row
                                 .zip(pixel_spacing_col)
                                 .map(|(r, c)| [r, c]),
-                            slice_thickness: row.get(12)?,
+                            slice_thickness: row.get(14)?,
                             warnings: Vec::new(), // filled below
                             depths: Vec::new(),   // filled below
-                            slice_count: row.get(14)?,
+                            slice_count: row.get(16)?,
                         },
                         warnings_json,
                     ))
@@ -222,6 +261,23 @@ impl Index {
         detail.depths = depths;
 
         Ok(Some(detail))
+    }
+
+    /// All slice paths for a series, in ordinal (geometric) order, as one
+    /// query. The volume pipeline needs every path up front to fan decoding
+    /// out across threads; doing that via `slice_path` in a loop would be
+    /// one locked SQLite round trip per slice instead of one for the whole
+    /// series.
+    pub fn slice_paths(&self, uid: &str) -> Result<Vec<PathBuf>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM slices WHERE series_uid = ?1 ORDER BY ordinal")?;
+        let rows = stmt.query_map([uid], |row| row.get::<_, String>(0))?;
+        Ok(rows
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect())
     }
 
     /// Looks up the on-disk path for one slice by its persisted geometric
@@ -279,6 +335,8 @@ mod tests {
             pixel_spacing: Some((0.7, 0.7)),
             slice_thickness: Some(5.0),
             depth,
+            series_description: None,
+            study_description: None,
         }
     }
 
@@ -300,6 +358,8 @@ mod tests {
             modality: "CT".to_string(),
             rows: 512,
             cols: 512,
+            series_description: None,
+            study_description: None,
             uniform_spacing: true,
             spacing_mm: Some(5.0),
             hu_calibrated,
@@ -347,6 +407,23 @@ mod tests {
 
         let missing = idx.slice_path("SERIES1", 99).unwrap();
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn slice_paths_returns_all_in_ordinal_order() {
+        let idx = Index::open_in_memory().unwrap();
+        let manifest = make_manifest(true);
+        idx.insert_series(&manifest).unwrap();
+
+        let paths = idx.slice_paths("SERIES1").unwrap();
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/data/slice-0.dcm"),
+                PathBuf::from("/data/slice-1.dcm"),
+                PathBuf::from("/data/slice-2.dcm"),
+            ]
+        );
     }
 
     #[test]
