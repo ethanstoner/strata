@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Strata Viewer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d10;
+        --panel: #14171b;
+        --panel-border: #262b31;
+        --text: #d7dbdf;
+        --text-dim: #889098;
+        --text-dimmer: #6b7480;
+        --accent: #4fa3d1;
+        --warn-bg: #3a2a10;
+        --warn-border: #8a5a10;
+        --warn-text: #e8b660;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-size: 13px;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 8px 14px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--panel-border);
+        flex-shrink: 0;
+      }
+
+      header h1 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0;
+        letter-spacing: 0.02em;
+        color: var(--text);
+      }
+
+      select {
+        background: #1c2126;
+        color: var(--text);
+        border: 1px solid var(--panel-border);
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 13px;
+        min-width: 260px;
+      }
+
+      main {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+
+      #viewport {
+        flex: 1;
+        position: relative;
+        background: #000;
+        min-width: 0;
+      }
+
+      #gl-canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        cursor: crosshair;
+      }
+
+      #overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #overlay .row {
+        display: flex;
+        justify-content: space-between;
+        color: #cfe3ef;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #uncalibrated-notice {
+        display: none;
+        background: var(--warn-bg);
+        border: 1px solid var(--warn-border);
+        color: var(--warn-text);
+        padding: 4px 10px;
+        font-size: 12px;
+        border-radius: 4px;
+        align-self: flex-start;
+        pointer-events: auto;
+      }
+
+      aside {
+        width: 240px;
+        flex-shrink: 0;
+        background: var(--panel);
+        border-left: 1px solid var(--panel-border);
+        padding: 14px;
+        overflow-y: auto;
+      }
+
+      aside h2 {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-dimmer);
+        margin: 0 0 8px;
+        font-weight: 600;
+      }
+
+      .info-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 10px;
+        margin-bottom: 20px;
+        font-size: 12px;
+      }
+
+      .info-grid dt {
+        color: var(--text-dimmer);
+      }
+
+      .info-grid dd {
+        margin: 0;
+        text-align: right;
+        color: var(--text);
+      }
+
+      .presets {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        margin-bottom: 20px;
+      }
+
+      button.preset {
+        background: #1c2126;
+        color: var(--text);
+        border: 1px solid var(--panel-border);
+        border-radius: 4px;
+        padding: 6px 4px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      button.preset:hover {
+        border-color: var(--accent);
+        color: #fff;
+      }
+
+      button.preset.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #04202e;
+        font-weight: 600;
+      }
+
+      .hint {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--text-dimmer);
+      }
+
+      #empty-state {
+        color: var(--text-dimmer);
+        margin: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Strata</h1>
+      <select id="series-select">
+        <option value="">Loading series…</option>
+      </select>
+    </header>
+    <main>
+      <div id="viewport">
+        <canvas id="gl-canvas"></canvas>
+        <div id="overlay">
+          <div id="uncalibrated-notice">
+            Uncalibrated pixel data &mdash; values are NOT Hounsfield Units
+          </div>
+          <div class="row">
+            <span id="slice-label">&mdash;</span>
+            <span id="window-label">&mdash;</span>
+          </div>
+        </div>
+        <div id="empty-state">Select a series to begin</div>
+      </div>
+      <aside>
+        <h2>Series</h2>
+        <dl class="info-grid" id="info-grid">
+          <dt>Patient</dt>
+          <dd id="info-patient">&mdash;</dd>
+          <dt>Modality</dt>
+          <dd id="info-modality">&mdash;</dd>
+          <dt>Dimensions</dt>
+          <dd id="info-dims">&mdash;</dd>
+          <dt>Slices</dt>
+          <dd id="info-slices">&mdash;</dd>
+        </dl>
+        <h2>Window presets</h2>
+        <div class="presets" id="presets"></div>
+        <h2>Controls</h2>
+        <p class="hint">
+          Scroll to change slice.<br />
+          Drag with the left button: horizontal adjusts window centre,
+          vertical adjusts window width.
+        </p>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
