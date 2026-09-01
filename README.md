@@ -154,15 +154,23 @@ Then open <http://127.0.0.1:8080>.
 
 ### Getting test data
 
-Public, free, no account required — the National Cancer Institute's imaging
-archive:
+No account, no registration. One command pulls a real study from the National
+Cancer Institute's public imaging archive:
+
+```powershell
+.\scripts\fetch-sample.ps1              # 60-slice chest CT, ~17 MB
+.\scripts\fetch-sample.ps1 -Size large  # ~500-slice study, ~145 MB
+```
 
 ```bash
-BASE=https://services.cancerimagingarchive.net/nbia-api/services/v1
-curl "$BASE/getSeries?Collection=TCGA-LUAD&Modality=CT" > series.json
-curl "$BASE/getImage?SeriesInstanceUID=<uid>" -o series.zip
-unzip series.zip -d data/sample
+./scripts/fetch-sample.sh               # same, for Linux and macOS
+./scripts/fetch-sample.sh --size large
 ```
+
+The script verifies the download is genuinely a zip before extracting and that
+the extracted files carry the DICOM magic, so a truncated transfer or an error
+page returned with HTTP 200 fails with a clear message instead of a confusing
+unzip error.
 
 ## API
 
