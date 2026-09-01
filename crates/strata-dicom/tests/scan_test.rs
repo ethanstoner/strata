@@ -2,6 +2,7 @@ mod common;
 
 use strata_dicom::error::DicomError;
 use strata_dicom::meta::SliceMeta;
+use strata_dicom::scan::scan_directory;
 
 #[test]
 fn fixture_builder_produces_a_readable_file() {
@@ -121,4 +122,227 @@ fn computes_depth_from_geometry() {
     let meta = SliceMeta::from_file(&p).expect("valid fixture must parse");
 
     assert!((meta.depth - 7.5).abs() < 1e-9);
+}
+
+#[test]
+fn orders_by_geometry_when_instance_numbers_are_shuffled() {
+    let dir = tempfile::tempdir().unwrap();
+
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 0.0],
+            instance_number: 3,
+            ..Default::default()
+        },
+    );
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 5.0],
+            instance_number: 1,
+            ..Default::default()
+        },
+    );
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 10.0],
+            instance_number: 2,
+            ..Default::default()
+        },
+    );
+
+    let manifests = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(manifests.len(), 1);
+
+    let depths: Vec<f64> = manifests[0].slices.iter().map(|s| s.depth).collect();
+    assert_eq!(
+        depths,
+        vec![0.0, 5.0, 10.0],
+        "slices must be ordered by geometric depth, not InstanceNumber"
+    );
+}
+
+#[test]
+fn separates_two_interleaved_series_in_one_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let series_a = "1.2.826.0.1.3680043.8.498.1111";
+    let series_b = "1.2.826.0.1.3680043.8.498.2222";
+
+    for i in 0..3 {
+        let z = i as f64 * 5.0;
+        common::write_slice(
+            dir.path(),
+            &common::FixtureSlice {
+                series_uid: series_a.to_string(),
+                position: [0.0, 0.0, z],
+                ..Default::default()
+            },
+        );
+        common::write_slice(
+            dir.path(),
+            &common::FixtureSlice {
+                series_uid: series_b.to_string(),
+                position: [0.0, 0.0, z],
+                ..Default::default()
+            },
+        );
+    }
+
+    let manifests = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(manifests.len(), 2, "expected two distinct series manifests");
+    assert!(manifests.iter().all(|m| m.slices.len() == 3));
+}
+
+#[test]
+fn flags_non_uniform_slice_spacing() {
+    let dir = tempfile::tempdir().unwrap();
+    for z in [0.0, 5.0, 40.0] {
+        common::write_slice(
+            dir.path(),
+            &common::FixtureSlice {
+                position: [0.0, 0.0, z],
+                ..Default::default()
+            },
+        );
+    }
+
+    let manifests = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(manifests.len(), 1);
+    assert!(!manifests[0].uniform_spacing);
+}
+
+#[test]
+fn uniform_spacing_is_true_for_even_slices() {
+    let dir = tempfile::tempdir().unwrap();
+    for z in [0.0, 5.0, 10.0] {
+        common::write_slice(
+            dir.path(),
+            &common::FixtureSlice {
+                position: [0.0, 0.0, z],
+                ..Default::default()
+            },
+        );
+    }
+
+    let manifests = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(manifests.len(), 1);
+    assert!(manifests[0].uniform_spacing);
+    let spacing = manifests[0]
+        .spacing_mm
+        .expect("multi-slice series must report a spacing");
+    assert!((spacing - 5.0).abs() < 1e-9);
+}
+
+#[test]
+fn series_is_uncalibrated_if_any_slice_lacks_rescale() {
+    let dir = tempfile::tempdir().unwrap();
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 0.0],
+            rescale: Some((1.0, -1024.0)),
+            ..Default::default()
+        },
+    );
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 5.0],
+            rescale: Some((1.0, -1024.0)),
+            ..Default::default()
+        },
+    );
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 10.0],
+            rescale: None,
+            ..Default::default()
+        },
+    );
+
+    let manifests = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(manifests.len(), 1);
+    assert!(
+        !manifests[0].hu_calibrated,
+        "a partially calibrated series must not be reported as calibrated"
+    );
+}
+
+#[test]
+fn single_slice_series_is_not_a_volume() {
+    let dir = tempfile::tempdir().unwrap();
+    common::write_slice(dir.path(), &common::FixtureSlice::default());
+
+    let manifests = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(manifests.len(), 1);
+    assert!(!manifests[0].is_volume);
+}
+
+#[test]
+fn unparseable_file_becomes_a_warning_not_a_scan_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 0.0],
+            ..Default::default()
+        },
+    );
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 5.0],
+            ..Default::default()
+        },
+    );
+    let bad_path = common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            omit_tag: Some("ImageOrientationPatient"),
+            ..Default::default()
+        },
+    );
+
+    let manifests = scan_directory(dir.path()).expect("a corrupt file must not fail the scan");
+
+    let total_slices: usize = manifests.iter().map(|m| m.slices.len()).sum();
+    assert_eq!(total_slices, 2, "the two good slices must still be present");
+
+    let bad_name = bad_path.file_name().unwrap().to_str().unwrap();
+    let found_warning = manifests
+        .iter()
+        .flat_map(|m| &m.warnings)
+        .any(|w| w.contains(bad_name));
+    assert!(found_warning, "expected a warning naming {bad_name}");
+}
+
+#[test]
+fn non_dicom_files_are_skipped_silently() {
+    let dir = tempfile::tempdir().unwrap();
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 0.0],
+            ..Default::default()
+        },
+    );
+    common::write_slice(
+        dir.path(),
+        &common::FixtureSlice {
+            position: [0.0, 0.0, 5.0],
+            ..Default::default()
+        },
+    );
+    std::fs::write(dir.path().join("notes.txt"), b"hello").unwrap();
+
+    let manifests = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(manifests.len(), 1);
+    assert_eq!(manifests[0].slices.len(), 2);
+    assert!(
+        manifests.iter().all(|m| m.warnings.is_empty()),
+        "a non-DICOM file must not generate a warning"
+    );
 }
