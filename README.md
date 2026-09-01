@@ -21,7 +21,7 @@ resolution in the browser. Bone transfer function, 180 HU threshold.*
 ## Try it in about a minute
 
 ```bash
-git clone <this repo> && cd strata
+git clone https://github.com/ethanstoner/strata && cd strata
 cargo build --release
 cd web && npm install && npm run build && cd ..
 
