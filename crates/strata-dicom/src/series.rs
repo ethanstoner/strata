@@ -47,6 +47,7 @@ impl SeriesManifest {
         let cols = first.cols;
         let series_description = first.series_description.clone();
         let study_description = first.study_description.clone();
+        let first_orientation = first.orientation;
 
         let mut warnings = Vec::new();
         if slices.iter().any(|s| s.rows != rows || s.cols != cols) {
@@ -63,8 +64,28 @@ impl SeriesManifest {
             ));
         }
 
+        // Every slice's depth was projected onto that slice's OWN normal, so the
+        // sort above only means something if the slices all face the same way.
+        // When they do not, the depths are distances along different axes, and
+        // ordering them against each other produces a plausible-looking volume
+        // of anatomy that was never adjacent. That happens for real: a localizer
+        // swept into the series, an MR acquisition with several slice groups, or
+        // a re-planned scan reusing the SeriesInstanceUID.
+        let orientations_agree = slices
+            .iter()
+            .all(|s| orientations_match(&s.orientation, &first_orientation));
+        if !orientations_agree {
+            warnings.push(format!(
+                "series {series_uid} contains slices with differing ImageOrientationPatient; \
+                 slice order is not meaningful and this is not a coherent volume"
+            ));
+        }
+
         let hu_calibrated = slices.iter().all(|s| s.rescale.is_some());
-        let is_volume = slices.len() > 1;
+        // A series whose slices face different directions has no single stacking
+        // axis, so it is a pile of images rather than a volume, however many of
+        // them there are.
+        let is_volume = slices.len() > 1 && orientations_agree;
         let (spacing_mm, uniform_spacing) = spacing_stats(&slices);
 
         SeriesManifest {
@@ -84,6 +105,17 @@ impl SeriesManifest {
             warnings,
         }
     }
+}
+
+/// Whether two ImageOrientationPatient triplet-pairs describe the same plane.
+///
+/// The tolerance is absolute rather than relative because direction cosines are
+/// already normalised to [-1, 1], so 1e-6 is about four orders of magnitude
+/// looser than the float noise of a re-encoded DS string and far tighter than
+/// any real difference in acquisition geometry. Gantry tilt within one series
+/// stays well inside it; a localizer sweep does not.
+fn orientations_match(a: &[f64; 6], b: &[f64; 6]) -> bool {
+    a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() <= 1e-6)
 }
 
 /// Median of consecutive depth deltas, and whether every delta is within 1%

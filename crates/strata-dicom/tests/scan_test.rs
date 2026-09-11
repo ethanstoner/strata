@@ -278,6 +278,70 @@ fn single_slice_series_is_not_a_volume() {
     assert!(!result.series[0].is_volume);
 }
 
+/// An axial stack with one sagittal slice swept into the same SeriesInstanceUID.
+/// Every depth is a projection onto that slice's own normal, so the odd one out
+/// sorts into a position that means nothing. The renderer cannot tell, which is
+/// the whole problem: it produces a clean image of anatomy that does not exist.
+#[test]
+fn mixed_slice_orientations_are_not_a_volume() {
+    const AXIAL: [f64; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    const SAGITTAL: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, -1.0];
+
+    let dir = tempfile::tempdir().unwrap();
+    for (z, orientation) in [(0.0, AXIAL), (5.0, AXIAL), (10.0, SAGITTAL)] {
+        common::write_slice(
+            dir.path(),
+            &common::FixtureSlice {
+                position: [0.0, 0.0, z],
+                orientation,
+                ..Default::default()
+            },
+        );
+    }
+
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
+    let series = &result.series[0];
+
+    assert!(
+        !series.is_volume,
+        "slices facing different ways have no single stacking axis"
+    );
+    assert!(
+        series
+            .warnings
+            .iter()
+            .any(|w| w.contains("ImageOrientationPatient")),
+        "the mismatch has to be named, not just silently downgraded; got {:?}",
+        series.warnings
+    );
+}
+
+#[test]
+fn matching_orientations_are_still_a_volume() {
+    let dir = tempfile::tempdir().unwrap();
+    for z in [0.0, 5.0, 10.0] {
+        common::write_slice(
+            dir.path(),
+            &common::FixtureSlice {
+                position: [0.0, 0.0, z],
+                ..Default::default()
+            },
+        );
+    }
+
+    let result = scan_directory(dir.path()).expect("scan must succeed");
+    assert_eq!(result.series.len(), 1);
+    let series = &result.series[0];
+
+    assert!(series.is_volume);
+    assert!(
+        series.warnings.is_empty(),
+        "an ordinary axial stack must not be warned about; got {:?}",
+        series.warnings
+    );
+}
+
 #[test]
 fn unparseable_file_becomes_a_warning_not_a_scan_failure() {
     let dir = tempfile::tempdir().unwrap();

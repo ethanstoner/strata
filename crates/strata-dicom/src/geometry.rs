@@ -34,6 +34,10 @@ pub fn slice_normal(iop: &[f64]) -> Result<[f64; 3], DicomError> {
 /// Signed distance of a slice along its own normal. This is the ONLY valid
 /// sort key for slice order. InstanceNumber (0020,0013) is unreliable in
 /// real-world data and must never be used for this.
+///
+/// Two of these are only comparable when both slices share an
+/// ImageOrientationPatient, since otherwise they are distances along different
+/// axes. `SeriesManifest::from_slices` is what enforces that.
 pub fn slice_depth(ipp: &[f64; 3], normal: &[f64; 3]) -> f64 {
     ipp[0] * normal[0] + ipp[1] * normal[1] + ipp[2] * normal[2]
 }
