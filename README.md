@@ -188,7 +188,7 @@ without trilinear filtering aliases badly.
 ## Testing
 
 ```bash
-cargo test --workspace       # 65 pass, 7 more need real data (below)
+cargo test --workspace       # 67 pass, 7 more need real data (below)
 cd web && npx vitest run     # 60 tests
 ```
 
