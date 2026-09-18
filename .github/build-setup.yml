@@ -1,0 +1,7 @@
+# Injected by cargo-dist into the release build jobs (see github-build-setup
+# in dist-workspace.toml). strata's build.rs compiles the web UI with npm and
+# embeds it in the binary, so every build machine needs Node.js.
+- name: Install Node.js
+  uses: actions/setup-node@v4
+  with:
+    node-version: 20

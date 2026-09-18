@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch a real sample DICOM study from The Cancer Imaging Archive (TCIA) NBIA
 # REST API so a new user can try strata without hand-building curl commands.
-# Behaviourally equivalent to fetch-sample.ps1.
+# Behaviorally equivalent to fetch-sample.ps1.
 #
 #   ./scripts/fetch-sample.sh
 #   ./scripts/fetch-sample.sh --size large
@@ -200,4 +200,4 @@ echo "slices     : $dcm_count"
 echo "size       : ${total_mb} MB"
 echo "path       : $out_full"
 echo ""
-echo "next: cargo run --release -p strata-server -- --data-dir \"$OUT_DIR\""
+echo "next: cargo run --release -p strata -- \"$OUT_DIR\""

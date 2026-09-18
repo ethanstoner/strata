@@ -25,7 +25,7 @@ describe("huAtLutIndex / lutIndexForHU", () => {
     // Measured real study: hu_min -2048, well outside the fixed [-1024,
     // 3071] the LUT used to always assume. If huAtLutIndex/lutIndexForHU
     // silently kept using the fixed range while the volume texture was
-    // normalised with the real one, a control point authored at 300 HU
+    // normalized with the real one, a control point authored at 300 HU
     // would land on the wrong texel relative to what the shader samples.
     const range: HuRange = { min: -2048, max: 3071 };
     const idx = lutIndexForHU(300, LUT_SIZE, range);
@@ -43,7 +43,7 @@ describe("buildTransferFunctionLUT", () => {
     expect(lut).toBeInstanceOf(Uint8Array);
   });
 
-  it("places a control point's exact colour at its corresponding LUT index", () => {
+  it("places a control point's exact color at its corresponding LUT index", () => {
     const idx = 200;
     const hu = huAtLutIndex(idx);
     const lut = buildTransferFunctionLUT([
@@ -71,7 +71,7 @@ describe("buildTransferFunctionLUT", () => {
   it("clamps out-of-range control point HU to the nearest edge", () => {
     const lut = buildTransferFunctionLUT([{ hu: HU_MAX + 5000, r: 1, g: 0, b: 0, a: 1 }]);
     // A single control point outside range still fills the whole LUT with
-    // its (clamped) colour, since sampleControlPoints treats it as both ends.
+    // its (clamped) color, since sampleControlPoints treats it as both ends.
     expect(lut[0]).toBe(255);
     expect(lut[3]).toBe(255);
     expect(lut[(LUT_SIZE - 1) * 4]).toBe(255);

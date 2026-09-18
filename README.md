@@ -3,51 +3,67 @@
 [![CI](https://github.com/ethanstoner/strata/actions/workflows/ci.yml/badge.svg)](https://github.com/ethanstoner/strata/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Open any DICOM study in your browser. One binary, one folder, no setup.**
+**Open a folder of DICOM files in your browser. One binary, no PACS, no upload.**
 
-Point strata at a directory of CT or MRI files and it gives you a radiology
-workstation at `localhost` — scroll the slices, window the Hounsfield range,
-or render the whole study in 3D on the GPU. No database to populate, no
-DICOMweb server to stand up, no import step. It reads the files where they
-already are.
+![strata: scrolling CT slices, switching to a lung window, then rotating a 3D render](docs/images/demo.gif)
 
-![strata rendering a chest CT in 3D](docs/images/hero.png)
+*The real app on a public chest CT (TCGA-LUAD, CC BY 3.0): scroll the slices,
+switch to the lung window, then rotate the GPU-raymarched 3D view.*
 
-*A 60-slice chest CT from the public TCGA-LUAD collection, rendered at full
-resolution in the browser. Bone transfer function, 180 HU threshold.*
+## Install
 
----
-
-## Try it in about a minute
+macOS and Linux:
 
 ```bash
-git clone https://github.com/ethanstoner/strata && cd strata
-cargo build --release
-cd web && npm install && npm run build && cd ..
-
-./scripts/fetch-sample.sh          # real CT study, ~17 MB, no account needed
-cargo run --release -p strata-server -- --data-dir data/sample
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ethanstoner/strata/releases/latest/download/strata-installer.sh | sh
 ```
 
-Open <http://127.0.0.1:8080>. On Windows use `.\scripts\fetch-sample.ps1`.
+Windows (PowerShell):
 
-The sample fetcher pulls a genuine clinical study from the National Cancer
-Institute's public archive. `--size large` gets a ~500-slice study if you want
-to see the pyramid work.
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/ethanstoner/strata/releases/latest/download/strata-installer.ps1 | iex"
+```
 
-## Why this exists
+Then:
 
-There is a real gap between *having* DICOM files and *looking* at them.
+```bash
+strata ~/path/to/dicoms    # any folder of CT/MRI files, searched recursively
+strata --demo              # or download a small public chest CT and open it
+```
 
-| | what it costs you |
-| --- | --- |
-| OHIF, the mature open-source viewer | requires Orthanc or another DICOMweb server, plus ingesting every study into it first |
-| 3D Slicer, Horos, other desktop viewers | multi-gigabyte install, per machine, nothing you can share |
-| Python and matplotlib | slice thumbnails, not a viewer — no windowing, no 3D, no scrolling |
+strata opens your browser at `http://127.0.0.1:8080`. It's a single ~9 MB
+executable with the web UI compiled in, so there's nothing else to install.
+Prebuilt binaries cover macOS (Apple Silicon and Intel), Linux x86_64, and
+Windows x86_64. You can also download them directly from
+[Releases](https://github.com/ethanstoner/strata/releases).
+
+Your files stay on your machine. strata serves them only to your own browser
+on `127.0.0.1` and makes no network requests, except `--demo`'s one-time
+download of the sample study.
+
+> **Not for clinical use.** strata is for research and education. It is not a
+> medical device and must not be used for diagnosis or treatment decisions.
+
+## How it compares
+
+| | strata | [OHIF Viewer](https://github.com/OHIF/Viewers) | [3D Slicer](https://www.slicer.org/) |
+| --- | --- | --- | --- |
+| What you install | one ~9 MB binary | nothing for the hosted demo; a self-hosted copy is a web app you build (Node.js + Yarn) and serve | a desktop app: 269 MB (Windows) to 499 MB (Linux) download for 5.12.4 |
+| Getting a folder on screen | `strata <folder>` | default deployments read from a DICOMweb server (e.g. Orthanc) you set up and load studies into; local-file loading is off in the default production config, though the [hosted demo](https://viewer.ohif.org/local) accepts dropped files | import the folder into its DICOM database (drag it in or use the DICOM module), then load the series |
+| 3D | GPU raymarching in the browser | MPR and volume rendering | extensive: rendering, segmentation, registration, extensions |
+| Best for | a quick look at a dataset on your own machine | a full web viewer for a PACS or archive | serious analysis and research workflows |
+
+OHIF and Slicer do far more than strata. strata only tries to make the first
+look at a folder of files take seconds instead of a setup session. Sizes and
+requirements were checked in September 2026 against OHIF's
+[default config](https://github.com/OHIF/Viewers/blob/master/platform/app/public/config/default.js)
+and [developer docs](https://docs.ohif.org/development/getting-started/), and
+Slicer's [download server](https://download.slicer.org/) and
+[system requirements](https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html).
 
 Researchers, students, and ML engineers working with public imaging datasets
-mostly end up doing the matplotlib thing, because standing up a PACS to glance
-at one study is absurd. strata is for them.
+often fall back to plotting slices with matplotlib, which gives no windowing,
+no scrolling, and no 3D. strata is for them.
 
 ## What it does
 
@@ -56,6 +72,11 @@ at one study is absurd. strata is for them.
 derives the true 3D stacking order from each slice's recorded position.
 
 **Serves** slices and downsampled volumes over HTTP as raw Hounsfield Units.
+
+![strata rendering a chest CT in 3D](docs/images/hero.png)
+
+*A 60-slice chest CT from the public TCGA-LUAD collection, rendered at full
+resolution in the browser. Bone transfer function, 180 HU threshold.*
 
 **Renders** two ways:
 - *Slice view* — scroll the stack, drag to window, five radiology presets
@@ -141,7 +162,7 @@ Stated plainly rather than discovered later.
 
 - **Full resolution is not servable for large studies.** A 1026-slice study is
   513 MB at level 0, past both the response guard and practical GPU 3D texture
-  limits. The pyramid is mandatory, not an optimisation.
+  limits. The pyramid is mandatory, not an optimization.
 - **The scanner table renders as anatomy.** Its ribbed core is dense enough to
   pass a bone threshold, so it appears as a striped slab beside the patient.
   This is faithful rendering of real data; clinical workstations solve it with
@@ -165,11 +186,12 @@ DICOM directory
 strata-dicom ──── headers only, no pixel decode
       │           group by SeriesInstanceUID, order by geometric depth
       ▼
-strata-server ─── SQLite index, axum HTTP API, parallel decode,
+strata-server ─── SQLite index (in memory), axum HTTP API, parallel decode,
       │           pyramid construction, bounded on-disk cache
       ▼
 strata-web ────── slice view: int16 texture → isampler2D → shader windowing
                   volume view: R16F 3D texture → raymarcher → transfer function
+                  (built by build.rs and compiled into the strata binary)
 ```
 
 The two render paths deliberately differ. Slices use an integer texture so
@@ -185,16 +207,62 @@ without trilinear filtering aliases badly.
 | `GET /api/series/:uid/slices/:n` | one slice, raw little-endian `int16` |
 | `GET /api/series/:uid/volume?level=N` | a pyramid level, raw little-endian `int16` |
 
+## Demo data
+
+`strata --demo` downloads one 60-slice chest CT series (about 17 MB) from
+[The Cancer Imaging Archive](https://www.cancerimagingarchive.net/) through
+its public REST API. No account is needed.
+
+- **Collection:** TCGA-LUAD, series "Chest Routine 1",
+  `1.3.6.1.4.1.14519.5.2.1.7777.9002.288863784292986419246212301446`
+- **License:** [Creative Commons Attribution 3.0 Unported (CC BY 3.0)](https://creativecommons.org/licenses/by/3.0/),
+  as stated by TCIA for this collection and in the LICENSE file inside the download
+- **Citation:** Albertina, B., et al. (2016). The Cancer Genome Atlas Lung
+  Adenocarcinoma Collection (TCGA-LUAD) (Version 4) [Data set]. The Cancer
+  Imaging Archive. <https://doi.org/10.7937/K9/TCIA.2016.JGNIHEP5>
+- **Usage policy:** [TCIA data usage policies](https://www.cancerimagingarchive.net/data-usage-policies-and-restrictions/)
+
+The data is de-identified by TCIA. strata caches it in your OS cache directory
+(`~/Library/Caches/strata` on macOS, `~/.cache/strata` on Linux,
+`%LOCALAPPDATA%\strata` on Windows) and checks a SHA-256 checksum of the file
+contents before using it, on every run. A download that fails the check is
+deleted. Once cached, `--demo` works offline. If you're offline before the
+first download, strata says so and exits.
+
+For a larger study, `./scripts/fetch-sample.sh --size large` (or
+`.\scripts\fetch-sample.ps1 -Size large` on Windows) fetches a ~500-slice
+series from the same archive into `data/sample`.
+
+## Building from source
+
+You need Rust (stable) and Node.js 18+ with npm.
+
+```bash
+git clone https://github.com/ethanstoner/strata && cd strata
+cargo build --release          # also builds the web UI and embeds it
+./target/release/strata --demo
+```
+
+`crates/strata-server/build.rs` runs `npm ci` (first time only) and
+`npm run build` for `web/`, then embeds the output in the binary. Two escape
+hatches:
+
+- `STRATA_WEB_DIST=/path/to/dist` embeds a UI you've already built.
+- `STRATA_SKIP_WEB_BUILD=1` builds an API-only binary with a placeholder page.
+
+For UI work, run `strata <folder> --addr 127.0.0.1:8099 --no-open` and
+`cd web && npm run dev` (Vite proxies `/api` to port 8099).
+
 ## Testing
 
 ```bash
-cargo test --workspace       # 67 pass, 7 more need real data (below)
+cargo test --workspace       # 75 pass, 7 more need real data (below)
 cd web && npx vitest run     # 60 tests
 ```
 
 DICOM fixtures are valid files generated programmatically at test time rather
 than committed binaries, so each test declares exactly the malformation it
-needs — shuffled instance numbers, absent tags, missing preamble, non-finite
+needs: shuffled instance numbers, absent tags, missing preamble, non-finite
 positions, two series interleaved in one directory.
 
 Tests requiring real imaging data are marked `#[ignore]`:
@@ -203,6 +271,14 @@ Tests requiring real imaging data are marked `#[ignore]`:
 ./scripts/fetch-sample.sh
 cargo test -p strata-dicom --test real_data_test -- --ignored --nocapture
 ```
+
+## Releasing
+
+Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist)
+(`dist-workspace.toml`, `.github/workflows/release.yml`). Pushing a version
+tag such as `v0.1.0` builds all four targets, creates the GitHub release, and
+uploads the archives, checksums, and the shell/PowerShell installers.
+`dist plan` shows what a release would contain.
 
 ## License
 

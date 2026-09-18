@@ -46,7 +46,7 @@ export interface Extent {
 }
 
 /**
- * Physical size of the volume per axis (dim * spacing), normalised so the
+ * Physical size of the volume per axis (dim * spacing), normalized so the
  * largest axis is 1.0. This is the box the raymarcher intersects — using
  * dims alone (a unit cube) ignores the ~8.5x in-plane-vs-slice-thickness
  * anisotropy and renders the patient crushed along z.
@@ -79,7 +79,7 @@ export const MAX_RAYMARCH_STEPS = 2048;
  * ray (the box diagonal, in voxel units — the longest line segment that can
  * cross the volume), times an oversampling factor. `oversample = 1.0` is the
  * Nyquist floor; a ray marching at exactly one step per voxel still aliases
- * in practice because samples rarely land on voxel centres, so 1.5-2.0 is
+ * in practice because samples rarely land on voxel centers, so 1.5-2.0 is
  * recommended for a visibly clean render. Capped at MAX_RAYMARCH_STEPS.
  */
 export function requiredSteps(dims: Extent, oversample: number): number {

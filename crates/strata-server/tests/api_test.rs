@@ -260,7 +260,7 @@ async fn hu_calibrated_false_is_preserved_through_the_api() {
     let json = body_json(response).await;
     assert_eq!(json["hu_calibrated"], false);
 
-    // Also check the list endpoint, since it serialises a different struct.
+    // Also check the list endpoint, since it serializes a different struct.
     let response = app_with(&[make_manifest(false)])
         .oneshot(
             Request::builder()
@@ -298,7 +298,7 @@ async fn series_description_round_trips_through_the_index_to_detail_json() {
 }
 
 #[tokio::test]
-async fn missing_description_serialises_as_json_null_not_empty_string() {
+async fn missing_description_serializes_as_json_null_not_empty_string() {
     // No scanner-provided description at all — must be `null`, never `""`
     // and never a fabricated placeholder like the series UID.
     let app = app_with(&[make_manifest_with_descriptions(None, None)]);

@@ -30,7 +30,7 @@ Write-Host "os       : $((Get-CimInstance Win32_OperatingSystem).Caption)"
 Write-Host ""
 
 Write-Host "building release..."
-cargo build --release -p strata-server *> $null
+cargo build --release -p strata *> $null
 if ($LASTEXITCODE -ne 0) { throw "release build failed" }
 
 Write-Host "=== indexing ==="
@@ -40,9 +40,9 @@ cargo test --release -p strata-dicom --test bench_test -- --ignored --nocapture 
 $db = Join-Path $env:TEMP "strata-bench.sqlite"
 if (Test-Path $db) { Remove-Item $db -Force }
 
-$exe = Join-Path $repo "target\release\strata-server.exe"
+$exe = Join-Path $repo "target\release\strata.exe"
 $proc = Start-Process -FilePath $exe `
-    -ArgumentList @("--data-dir", $DataDir, "--addr", "127.0.0.1:$Port", "--index", $db) `
+    -ArgumentList @("--data-dir", $DataDir, "--addr", "127.0.0.1:$Port", "--index", $db, "--no-open") `
     -PassThru -WindowStyle Hidden
 
 try {

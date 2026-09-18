@@ -110,7 +110,7 @@ impl SeriesManifest {
 /// Whether two ImageOrientationPatient triplet-pairs describe the same plane.
 ///
 /// The tolerance is absolute rather than relative because direction cosines are
-/// already normalised to [-1, 1], so 1e-6 is about four orders of magnitude
+/// already normalized to [-1, 1], so 1e-6 is about four orders of magnitude
 /// looser than the float noise of a re-encoded DS string and far tighter than
 /// any real difference in acquisition geometry. Gantry tilt within one series
 /// stays well inside it; a localizer sweep does not.

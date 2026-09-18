@@ -12,12 +12,12 @@ export const PRESETS: Record<string, Window> = {
 };
 
 /**
- * Maps a Hounsfield Unit value through a radiology window to a 0-255 grey
+ * Maps a Hounsfield Unit value through a radiology window to a 0-255 gray
  * level, clamping outside the window's floor/ceiling.
  */
 export function huToByte(hu: number, w: Window): number {
   // A non-positive width has no meaningful window; treat it as a hard
-  // threshold at the centre instead of dividing by zero (which yields NaN
+  // threshold at the center instead of dividing by zero (which yields NaN
   // and renders as an undefined/black pixel).
   if (w.width <= 0) {
     return hu < w.center ? 0 : 255;

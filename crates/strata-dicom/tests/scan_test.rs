@@ -444,7 +444,7 @@ fn parses_dicom_without_a_128_byte_preamble() {
 
     // If dicom-rs itself can't open a preamble-less file, that's a real
     // finding worth surfacing rather than a test to force green: the
-    // detector must still recognise it as DICOM and report a warning
+    // detector must still recognize it as DICOM and report a warning
     // naming the file, instead of silently dropping it.
     match SliceMeta::from_file(&no_preamble_path) {
         Ok(_) => {
@@ -527,7 +527,7 @@ fn absent_description_is_none_not_empty_string() {
 }
 
 #[test]
-fn whitespace_only_description_normalises_to_none() {
+fn whitespace_only_description_normalizes_to_none() {
     let dir = tempfile::tempdir().unwrap();
     let f = common::FixtureSlice {
         series_description: "   ".to_string(),
