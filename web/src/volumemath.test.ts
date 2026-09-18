@@ -37,7 +37,7 @@ describe("normalizeHU / denormalizeHU", () => {
   });
 
   it("denormalize matches the shader's literal formula for the default range", () => {
-    // hu = normalised * (3071.0 + 1024.0) - 1024.0
+    // hu = normalized * (3071.0 + 1024.0) - 1024.0
     expect(denormalizeHU(0.5)).toBeCloseTo(0.5 * (3071 + 1024) - 1024, 9);
   });
 
@@ -45,7 +45,7 @@ describe("normalizeHU / denormalizeHU", () => {
     expect(normalizeHU(500)).toBeCloseTo(normalizeHU(500, DEFAULT_HU_RANGE), 12);
   });
 
-  it("normalises against a real per-volume range instead of the fixed default", () => {
+  it("normalizes against a real per-volume range instead of the fixed default", () => {
     // Measured real study: hu_min is -2048 (CT out-of-reconstruction-circle
     // fill value), well below the fixed -1024 floor. A fixed-range
     // normalize would clamp this to 0 and lose it; a range-aware one must
@@ -67,7 +67,7 @@ describe("normalizeHU / denormalizeHU", () => {
     }
   });
 
-  it("a control-point-style HU value lands at the same normalised position it was authored at, for any range", () => {
+  it("a control-point-style HU value lands at the same normalized position it was authored at, for any range", () => {
     // Stand-in for the transfer function requirement: a bone control point
     // authored at 300 HU must map to a consistent, invertible texel
     // position regardless of which volume's range is in effect.

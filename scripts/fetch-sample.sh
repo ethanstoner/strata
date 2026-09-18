@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch a real sample DICOM study from The Cancer Imaging Archive (TCIA) NBIA
 # REST API so a new user can try strata without hand-building curl commands.
-# Behaviourally equivalent to fetch-sample.ps1.
+# Behaviorally equivalent to fetch-sample.ps1.
 #
 #   ./scripts/fetch-sample.sh
 #   ./scripts/fetch-sample.sh --size large

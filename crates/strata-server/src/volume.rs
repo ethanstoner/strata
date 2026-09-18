@@ -59,7 +59,7 @@ pub fn output_bytes(dim_x: u32, dim_y: u32, dim_z: u32) -> u64 {
     (dim_x as u64) * (dim_y as u64) * (dim_z as u64) * 2
 }
 
-/// Box-averages `factor`-cubed neighbourhoods of a slice-major (x fastest,
+/// Box-averages `factor`-cubed neighborhoods of a slice-major (x fastest,
 /// then y, then z) i16 volume. Averaging is done in i64 so a block of
 /// extreme values (e.g. all `i16::MAX`) cannot overflow on the way to the
 /// rounded i16 result. Dimensions not a multiple of `factor` are handled by

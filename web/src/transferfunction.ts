@@ -22,7 +22,7 @@ export const LUT_SIZE = 256;
 /**
  * HU value that LUT texel `index` (of `size`) represents. Inverse of
  * lutIndexForHU. `range` must be the same HU range the volume texture was
- * normalised with (defaults to the fixed clinical range) — otherwise a
+ * normalized with (defaults to the fixed clinical range) — otherwise a
  * control point authored at, say, 300 HU lands on the wrong texel relative
  * to what the shader actually samples at that voxel.
  */
@@ -63,13 +63,13 @@ function sampleControlPoints(sorted: ControlPoint[], hu: number): [number, numbe
 /**
  * Builds a `size`x1 RGBA8 LUT (flat Uint8Array, 4 bytes/texel) from HU->RGBA
  * control points, piecewise-linearly interpolated in HU space. Texel index i
- * corresponds to HU = huAtLutIndex(i, size) — the same normalised-HU domain
+ * corresponds to HU = huAtLutIndex(i, size) — the same normalized-HU domain
  * the volume texture's R16F values live in, so the shader can sample this
- * LUT directly with the volume's raw (normalised) texture read as the x
+ * LUT directly with the volume's raw (normalized) texture read as the x
  * coordinate, no per-sample HU conversion needed for the transfer function.
  *
  * `range` must match whatever HU range the currently-loaded volume was
- * normalised with (VolumeView.uploadVolume's huMin/huMax) so a control
+ * normalized with (VolumeView.uploadVolume's huMin/huMax) so a control
  * point's texel lines up with the texture value the shader actually reads
  * for that HU.
  */

@@ -17,7 +17,7 @@ import {
 
 // Extra samples per voxel along the worst-case ray, beyond the bare Nyquist
 // floor (oversample=1.0). 1.0 still visibly aliases in practice since
-// samples rarely land on voxel centres; 1.5 cleans that up without doubling
+// samples rarely land on voxel centers; 1.5 cleans that up without doubling
 // per-frame cost the way 2.0 would.
 const STEP_OVERSAMPLE = 1.5;
 
@@ -211,7 +211,7 @@ function buildTfPresetButtons(): void {
 function applyTransferFunctionPreset(): void {
   const points = TRANSFER_PRESETS[currentTfPreset];
   // Must build the LUT over the same HU range the volume texture was
-  // normalised with, or a control point's HU (e.g. bone at 300) lands on
+  // normalized with, or a control point's HU (e.g. bone at 300) lands on
   // the wrong texel relative to what the shader samples for that voxel.
   volumeView.setTransferFunction(buildTransferFunctionLUT(points, undefined, currentVolumeRange));
   if (mode === "volume") volumeView.render();
@@ -318,7 +318,7 @@ async function loadVolumeIfNeeded(seriesUid: string, level: number): Promise<voi
   }
 }
 
-// Window centre/width only affect the render in slice mode or in volume
+// Window center/width only affect the render in slice mode or in volume
 // mode's MIP path (see volumeview.ts's FRAG_SRC: uWindowCenter/Width are
 // only read under uMipMode==1). Showing the presets in normal volume mode
 // offers a control that silently does nothing when clicked.
@@ -542,7 +542,7 @@ function wireInteractions(): void {
     const dy = ev.clientY - lastY;
     lastX = ev.clientX;
     lastY = ev.clientY;
-    // Standard radiology drag: horizontal moves the window centre,
+    // Standard radiology drag: horizontal moves the window center,
     // vertical moves the window width. Sensitivity is in HU per pixel.
     currentWindow = {
       center: currentWindow.center + dx * 3,

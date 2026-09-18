@@ -175,7 +175,7 @@ impl DiskCache {
     ///
     /// A file that fails to delete (e.g. still open for reading — on
     /// Windows an open handle blocks `DeleteFile` outright, which is the
-    /// conservative behaviour we want) is logged and left in place rather
+    /// conservative behavior we want) is logged and left in place rather
     /// than retried or treated as an error: a reader must never have its
     /// file pulled out from under it, so staying briefly over budget is
     /// preferred over forcing the delete.

@@ -13,7 +13,7 @@ void main() {
 `;
 
 // Raymarching fragment shader. Everything is in "box space": the volume's
-// physical bounding box, centred at the origin, sized by physicalExtent()
+// physical bounding box, centered at the origin, sized by physicalExtent()
 // so the largest axis spans 1.0 and anisotropic voxel spacing is respected.
 const FRAG_SRC = `#version 300 es
 precision highp float;
@@ -40,7 +40,7 @@ uniform float uWindowCenter;
 uniform float uWindowWidth;
 // The volume's actual HU range (server-reported hu_min/hu_max, not a fixed
 // clinical constant — see volumemath.ts's normalizeHU). Must match the range
-// uploadVolume() normalised the 3D texture with, or the HU reconstruction
+// uploadVolume() normalized the 3D texture with, or the HU reconstruction
 // below disagrees with what's actually in the texture.
 uniform float uHuMin;
 uniform float uHuRange;
@@ -202,12 +202,12 @@ export class VolumeView {
   private boxMin: Vec3 = { x: -0.5, y: -0.5, z: -0.5 };
   private boxMax: Vec3 = { x: 0.5, y: 0.5, z: 0.5 };
   private referenceStep = 1 / 256;
-  // HU range the currently-uploaded volume texture was normalised with;
+  // HU range the currently-uploaded volume texture was normalized with;
   // defaults to the fixed clinical range until a real volume is loaded.
   private huMin: number = HU_MIN;
   private huRangeSpan: number = HU_MAX - HU_MIN;
 
-  // Orbit camera state, spherical around the box centre (origin).
+  // Orbit camera state, spherical around the box center (origin).
   private azimuth = 0.6;
   private elevation = 0.35;
   private distance = 2.2;
@@ -263,7 +263,7 @@ export class VolumeView {
     gl.bindTexture(gl.TEXTURE_3D, volumeTexture);
     // R16F + HALF_FLOAT (not R16I like the 2D slice path) because integer
     // textures aren't filterable in WebGL2, and raymarching without
-    // trilinear filtering produces heavy blocky aliasing. HU is normalised
+    // trilinear filtering produces heavy blocky aliasing. HU is normalized
     // to [0,1] on the CPU first (over the volume's actual hu_min/hu_max, see
     // uploadVolume); half-float's ~11-bit mantissa over [0,1] is lossless
     // against the low-thousands of distinct HU values any real CT range has.
@@ -315,7 +315,7 @@ export class VolumeView {
   /**
    * Uploads a raw HU volume (x fastest, then y, then z) and sizes the box.
    * `range` is the volume's actual hu_min/hu_max (server-reported); it's
-   * what the CPU-side normalisation below uses, and it must be handed to
+   * what the CPU-side normalization below uses, and it must be handed to
    * the shader (see render()) so its HU reconstruction agrees with what got
    * baked into the texture. Defaults to the fixed clinical range for
    * callers that don't have a per-volume range.

@@ -124,7 +124,7 @@ fn downsample_handles_odd_dimensions() {
 
     // Block averages along x: avg(0,1)=0.5 -> 1, avg(2,3)=2.5 -> 3,
     // and the partial edge block {4} -> 4 (averaged over its own single
-    // voxel, not diluted by a phantom neighbour and not dropped).
+    // voxel, not diluted by a phantom neighbor and not dropped).
     let expected_x = [1i16, 3, 4];
     for nz in 0..3u32 {
         for ny in 0..3u32 {

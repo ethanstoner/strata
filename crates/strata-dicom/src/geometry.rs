@@ -1,7 +1,7 @@
 use crate::error::DicomError;
 
 /// Cross product of the row and column direction cosines from
-/// ImageOrientationPatient (0020,0037), normalised.
+/// ImageOrientationPatient (0020,0037), normalized.
 pub fn slice_normal(iop: &[f64]) -> Result<[f64; 3], DicomError> {
     if iop.len() != 6 {
         return Err(DicomError::BadOrientation(iop.len()));
