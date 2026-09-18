@@ -678,7 +678,7 @@ async function loadSeriesListAndFirst(): Promise<void> {
     canvas.style.display = "none";
     volumeCanvas.style.display = "none";
     emptyState.textContent =
-      "No DICOM series found. Point strata at a folder containing DICOM files, or run scripts/fetch-sample.ps1 to download a sample study.";
+      "No DICOM series found. Point strata at a folder containing DICOM files, or run `strata --demo` to open a public sample CT.";
     emptyState.style.display = "flex";
     return;
   }

@@ -34,6 +34,9 @@ tower.workspace = true
 clap.workspace = true
 rayon.workspace = true
 include_dir.workspace = true
+ureq.workspace = true
+zip.workspace = true
+sha2.workspace = true
 dirs.workspace = true
 open.workspace = true
 

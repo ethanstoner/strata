@@ -1,3 +1,4 @@
+pub mod demo;
 pub mod disk_cache;
 pub mod index;
 pub mod pixels;

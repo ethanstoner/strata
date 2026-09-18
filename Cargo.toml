@@ -21,6 +21,9 @@ clap = { version = "4", features = ["derive", "env"] }
 tempfile = "3"
 rayon = "1"
 include_dir = "0.7"
+ureq = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
 dirs = "6"
 open = "5"
 

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Context};
 use clap::Parser;
 
+use strata_server::demo;
 use strata_server::index::Index;
 use strata_server::routes::build_router_with_cache_dir;
 use strata_server::ui;
@@ -21,11 +22,16 @@ const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 #[command(name = "strata", version, about, long_about)]
 struct Cli {
     /// Folder of DICOM files to open (searched recursively).
-    #[arg(value_name = "FOLDER", conflicts_with = "data_dir")]
+    #[arg(value_name = "FOLDER", conflicts_with_all = ["data_dir", "demo"])]
     folder: Option<PathBuf>,
 
+    /// Download a small public chest CT (TCGA-LUAD, CC BY 3.0, about 17 MB)
+    /// once, cache it, and open it.
+    #[arg(long)]
+    demo: bool,
+
     /// Same as FOLDER; kept for older scripts.
-    #[arg(long, hide = true)]
+    #[arg(long, hide = true, conflicts_with = "demo")]
     data_dir: Option<PathBuf>,
 
     /// Address to serve on. Defaults to 127.0.0.1:8080, or a free port if
@@ -65,12 +71,20 @@ async fn main() {
 async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let data_dir = match cli.folder.clone().or(cli.data_dir.clone()) {
-        Some(dir) => dir,
-        None => bail!(
-            "no folder given.\n\n  strata <folder>   open a folder of DICOM files\n\n\
-             Run `strata --help` for all options."
-        ),
+    let data_dir = if cli.demo {
+        let series = &demo::TCGA_LUAD_CHEST_CT;
+        eprintln!("{}\n", series.attribution());
+        let url = std::env::var("STRATA_DEMO_URL").ok();
+        demo::ensure_demo(series, &demo::default_demo_root(), url.as_deref())?
+    } else {
+        match cli.folder.clone().or(cli.data_dir.clone()) {
+            Some(dir) => dir,
+            None => bail!(
+                "no folder given.\n\n  strata <folder>   open a folder of DICOM files\n  \
+                 strata --demo     download and open a small public sample CT\n\n\
+                 Run `strata --help` for all options."
+            ),
+        }
     };
     if !data_dir.is_dir() {
         bail!("{} is not a folder", display_path(&data_dir));
