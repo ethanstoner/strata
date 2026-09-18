@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -8,7 +8,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
-use tower_http::services::ServeDir;
 
 use crate::disk_cache::{DiskCache, DEFAULT_MAX_CACHE_BYTES};
 use crate::index::Index;
@@ -85,12 +84,6 @@ pub fn build_router(index: SharedIndex) -> Router {
     let n = ANON_CACHE_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("strata-cache-{}-{n}", std::process::id()));
     build_router_with_cache_dir(index, dir, DEFAULT_MAX_CACHE_BYTES)
-}
-
-/// Adds static file serving from `dist_dir` at `/`, with the API routes
-/// taking precedence via fallback.
-pub fn with_static_files(router: Router, dist_dir: &Path) -> Router {
-    router.fallback_service(ServeDir::new(dist_dir))
 }
 
 /// Any index/database failure becomes a 500; unknown-resource cases are

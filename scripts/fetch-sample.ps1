@@ -192,4 +192,4 @@ Write-Host ("slices     : {0}" -f $dcmFiles.Count)
 Write-Host ("size       : {0:N1} MB" -f ($totalBytes / 1MB))
 Write-Host "path       : $outFull"
 Write-Host ""
-Write-Host "next: cargo run --release -p strata-server -- --data-dir `"$OutDir`""
+Write-Host "next: cargo run --release -p strata -- `"$OutDir`""

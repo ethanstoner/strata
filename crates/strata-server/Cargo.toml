@@ -1,7 +1,25 @@
 [package]
-name = "strata-server"
+name = "strata"
 version = "0.1.0"
 edition.workspace = true
+license.workspace = true
+description = "Zero-setup DICOM viewer: point one binary at a folder of CT/MRI files and view them in the browser"
+repository = "https://github.com/ethanstoner/strata"
+homepage = "https://github.com/ethanstoner/strata"
+readme = "../../README.md"
+build = "build.rs"
+# "strata" on crates.io belongs to an unrelated project; this is distributed
+# as prebuilt binaries (cargo-dist), not through crates.io.
+publish = false
+
+# The library keeps its original name so `strata_server::` paths are stable.
+[lib]
+name = "strata_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "strata"
+path = "src/main.rs"
 
 [dependencies]
 strata-dicom = { path = "../strata-dicom" }
@@ -13,9 +31,11 @@ serde_json.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tower.workspace = true
-tower-http.workspace = true
 clap.workspace = true
 rayon.workspace = true
+include_dir.workspace = true
+dirs.workspace = true
+open.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
