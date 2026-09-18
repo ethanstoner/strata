@@ -27,3 +27,7 @@ sha2 = "0.10"
 dirs = "6"
 open = "5"
 
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
