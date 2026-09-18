@@ -17,3 +17,6 @@ install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
 install-updater = false
 # Extra steps for the build jobs: Node.js, which build.rs needs to embed the UI
 github-build-setup = "../build-setup.yml"
+# Build every target on pull requests too (uploaded as workflow artifacts, no
+# release), so a PR proves all four platforms still build
+pr-run-mode = "upload"
