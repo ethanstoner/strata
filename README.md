@@ -21,7 +21,7 @@ resolution in the browser. Bone transfer function, 180 HU threshold.*
 - A four-level volume pyramid lets a modest laptop load **1 MB instead of
   64 MB** of the same study; the 513 MB full-resolution volume is refused
   cleanly instead of crashing the GPU
-- **127 automated tests** (67 Rust, 60 TypeScript) on generated malformed
+- **129 automated tests** (69 Rust, 60 TypeScript) on generated malformed
   DICOM fixtures, plus 7 that run against real public studies
 
 **Rust · axum · SQLite · rayon · dicom-rs · TypeScript · WebGL2 · Vite**
@@ -167,7 +167,7 @@ TCIA archive; `--size large` gets a ~500-slice study that exercises the pyramid.
 ## Testing
 
 ```bash
-cargo test --workspace       # 67 pass; 7 more need real data (below)
+cargo test --workspace       # 69 pass; 7 more need real data (below)
 cd web && npm test           # 60 pass
 ```
 

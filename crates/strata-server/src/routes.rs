@@ -58,14 +58,30 @@ pub fn build_router_with_cache_dir(
     cache_dir: PathBuf,
     max_cache_bytes: u64,
 ) -> Router {
-    let disk_cache = Arc::new(
-        DiskCache::new(cache_dir, max_cache_bytes)
-            .expect("failed to create volume disk cache directory"),
-    );
+    let disk_cache = DiskCache::new(cache_dir, max_cache_bytes)
+        .expect("failed to create volume disk cache directory");
+    build_router_with_disk_cache(index, disk_cache)
+}
+
+/// Builds the API router with a private, process-unique temp directory as
+/// its disk cache, at the default cache budget. Existing callers (tests,
+/// mainly) that don't care about cache placement keep working unchanged;
+/// each call gets its own directory so parallel test runs can't collide on
+/// the same cache files. The directory is deleted once the last clone of
+/// the returned router is dropped.
+pub fn build_router(index: SharedIndex) -> Router {
+    let n = ANON_CACHE_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("strata-cache-{}-{n}", std::process::id()));
+    let disk_cache = DiskCache::new_temporary(dir, DEFAULT_MAX_CACHE_BYTES)
+        .expect("failed to create volume disk cache directory");
+    build_router_with_disk_cache(index, disk_cache)
+}
+
+fn build_router_with_disk_cache(index: SharedIndex, disk_cache: DiskCache) -> Router {
     let state = AppState {
         index,
         volume_cache: Arc::new(VolumeCache::new()),
-        disk_cache,
+        disk_cache: Arc::new(disk_cache),
     };
     Router::new()
         .route("/api/health", get(health))
@@ -74,17 +90,6 @@ pub fn build_router_with_cache_dir(
         .route("/api/series/:uid/slices/:ordinal", get(get_slice))
         .route("/api/series/:uid/volume", get(get_volume))
         .with_state(state)
-}
-
-/// Builds the API router with a private, process-unique temp directory as
-/// its disk cache, at the default cache budget. Existing callers (tests,
-/// mainly) that don't care about cache placement keep working unchanged;
-/// each call gets its own directory so parallel test runs can't collide on
-/// the same cache files.
-pub fn build_router(index: SharedIndex) -> Router {
-    let n = ANON_CACHE_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("strata-cache-{}-{n}", std::process::id()));
-    build_router_with_cache_dir(index, dir, DEFAULT_MAX_CACHE_BYTES)
 }
 
 /// Adds static file serving from `dist_dir` at `/`, with the API routes

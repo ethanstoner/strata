@@ -107,6 +107,7 @@ fn decode_header(buf: &[u8]) -> Option<Header> {
 pub struct DiskCache {
     dir: PathBuf,
     max_bytes: u64,
+    remove_on_drop: bool,
 }
 
 /// One `.svc` file's path, size, and mtime — everything eviction needs to
@@ -120,7 +121,20 @@ struct Entry {
 impl DiskCache {
     pub fn new(dir: PathBuf, max_bytes: u64) -> io::Result<Self> {
         fs::create_dir_all(&dir)?;
-        Ok(DiskCache { dir, max_bytes })
+        Ok(DiskCache {
+            dir,
+            max_bytes,
+            remove_on_drop: false,
+        })
+    }
+
+    /// Like `new`, but deletes `dir` and everything in it when dropped. For
+    /// throwaway caches (tests) only; a real `--cache-dir` must survive
+    /// restarts, so `new` never does this.
+    pub fn new_temporary(dir: PathBuf, max_bytes: u64) -> io::Result<Self> {
+        let mut cache = Self::new(dir, max_bytes)?;
+        cache.remove_on_drop = true;
+        Ok(cache)
     }
 
     /// Lists cache entries by scanning the directory fresh each time rather
@@ -366,6 +380,14 @@ impl DiskCache {
     }
 }
 
+impl Drop for DiskCache {
+    fn drop(&mut self) {
+        if self.remove_on_drop {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,5 +559,30 @@ mod tests {
 
         assert!(cache.get("SERIES1", 0, 8, mtime).is_none());
         assert_eq!(cache.entry_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn temporary_cache_deletes_its_dir_on_drop() {
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("cache");
+        let cache = DiskCache::new_temporary(dir.clone(), DEFAULT_MAX_CACHE_BYTES).unwrap();
+        cache
+            .put("SERIES1", 1, &sample_volume(), 8, SystemTime::now())
+            .unwrap();
+        assert!(dir.exists());
+
+        drop(cache);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn persistent_cache_survives_drop() {
+        let (dir, cache) = cache_in_tempdir();
+        let mtime = SystemTime::now();
+        cache.put("SERIES1", 1, &sample_volume(), 8, mtime).unwrap();
+        drop(cache);
+
+        let reopened = DiskCache::new(dir.path().to_path_buf(), DEFAULT_MAX_CACHE_BYTES).unwrap();
+        assert!(reopened.get("SERIES1", 1, 8, mtime).is_some());
     }
 }
