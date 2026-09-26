@@ -38,11 +38,13 @@ cargo test --release -p strata-dicom --test bench_test -- --ignored --nocapture 
     Select-String -Pattern "INDEX|median|per_slice"
 
 $db = Join-Path $env:TEMP "strata-bench.sqlite"
+$cacheDir = Join-Path $env:TEMP "strata-bench-cache"
 if (Test-Path $db) { Remove-Item $db -Force }
+if (Test-Path $cacheDir) { Remove-Item $cacheDir -Recurse -Force }
 
 $exe = Join-Path $repo "target\release\strata-server.exe"
 $proc = Start-Process -FilePath $exe `
-    -ArgumentList @("--data-dir", $DataDir, "--addr", "127.0.0.1:$Port", "--index", $db) `
+    -ArgumentList @("--data-dir", $DataDir, "--addr", "127.0.0.1:$Port", "--index", $db, "--cache-dir", $cacheDir) `
     -PassThru -WindowStyle Hidden
 
 try {
@@ -106,4 +108,5 @@ try {
 finally {
     if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
     if (Test-Path $db) { Remove-Item $db -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $cacheDir) { Remove-Item $cacheDir -Recurse -Force -ErrorAction SilentlyContinue }
 }
