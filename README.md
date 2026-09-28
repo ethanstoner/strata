@@ -14,7 +14,7 @@ resolution in the browser. Bone transfer function, 180 HU threshold.*
 
 ### Highlights
 
-- Indexes a 1,026-slice, 517 MB CT study in **~90 ms** by reading DICOM
+- Indexes a 1,026-slice, 517 MB CT study in **~100 ms** by reading DICOM
   headers only, never pixel data
 - Cut cold volume assembly on that study from **5.1 s to 1.07 s** with
   parallel decode; an on-disk pyramid cache serves it in **0.09 s** after a restart
@@ -133,8 +133,8 @@ AMD Ryzen 9 9950X3D (16C/32T), 93.6 GB RAM, Windows 11 Pro. Sizes in MiB.
 
 | | 60-slice chest CT | 1,026-slice abdominal CT |
 | --- | --- | --- |
-| Index (parse + group + order, warm OS cache) | ~5.5 ms | **~90 ms** |
-| Index rate | ~11,000 slices/sec | **~11,500 slices/sec** |
+| Index (parse + group + order, warm OS cache) | ~5.5 ms | **~100 ms** |
+| Index rate | ~11,000 slices/sec | **~10,400 slices/sec** |
 | Process start to serving | | 0.57 s |
 | Slice fetch p50 | 6.5 ms | |
 | Level 1 volume (256×256×513, 64 MB), cold (not yet assembled) | | **1.07 s** |
